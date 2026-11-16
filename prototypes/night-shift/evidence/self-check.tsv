@@ -1,0 +1,48 @@
+time	2026-11-16 19:47:43
+keep	lines	0	pinned	0
+briefword	the night shift	unlisted
+briefword	first person	unlisted	no shot at evidence/play.png
+briefword	first-person	unlisted
+checklist	L1	unlisted	-	Look: a graphite pencil drawing on off-white paper, as if the whole night is sketched in a notebook; loose, slightly wobbling lines redrawn a few times a second (line boil), cross-hatching for every shadow, heavy smudged darks in the corners; one accent colour only, a red pencil for hits, blood and the off licence's neon sign. A bare bulb swinging over the ramp throws a circle of light where the hatching thins. Every figure drawn, no emoji, no plain circles.	
+checklist	L2	unlisted	-	References: Sifu for martial-arts depth (parry timing, guard breaks, strings; values only) *(guessed)*.	
+checklist	L3	unlisted	-	View: first person, 2.5D (drawn perspective) · Camera: fixed eye height, facing the shutter onto the alley; one key turns you 180° to face the car on its ramp. Your own arms and legs drawn in the foreground.	
+checklist	F1	unlisted	-	First-person fists and feet drawn on screen, each move with its own pose: jab, cross, hook, elbow, front kick, spinning back kick, guard, parry	
+checklist	F2	unlisted	-	Combo strings (J J K, J K K, K K L ...) listed on the pause screen	
+checklist	F3	unlisted	-	Guard to block (chip damage) and a timed parry that staggers and opens a counter window	
+checklist	F4	unlisted	-	Slip left/right dodges	
+checklist	F5	unlisted	-	5 enemy kinds, each attacking differently: hoodie thug, crowbar brute, knife lad, car thief, the Gaffer (boss)	
+checklist	F6	unlisted	-	The car on the ramp, a HOTWIRE bar, and turning round to defend it	
+checklist	F7	unlisted	-	Tyre iron from the workbench: heavier hits, breaks after a few swings	
+checklist	F8	unlisted	-	Night clock 11 PM to 6 AM, a wave an hour, combo grade per hit string	
+checklist	F9	unlisted	-	Pencil look with line boil, hatching, red accent; sound through Web Audio	
+checklist	S1	unlisted	-	protecting the car · in the slice	
+checklist	S2	unlisted	-	melee weapons · thin stand-in *(guessed)*	
+checklist	S3	unlisted	-	combos and parries · in the slice	
+checklist	M1	unlisted	-	11 PM.	
+checklist	M2	unlisted	-	The shutter is half up; across the alley the off licence sign buzzes red.	
+checklist	M3	unlisted	-	One lone hoodie walks in under the shutter.	
+checklist	M4	unlisted	-	On-screen hints teach by doing: jab him (J), then he winds up a slow haymaker with a clear flash, and the hint says "tap SPACE as it lands": the parry staggers him with a crack, and the follow-up "J J K" lands a red-lined one-two-hook that drops him.	
+checklist	M5	unlisted	-	Ten seconds later two more arrive and one slips past you toward the car; the HOTWIRE bar starts filling and "S" turns you round to drag him off the motor.	
+checklist	M6	unlisted	-	That turn, with the other robber at your back, is the hook paying off.	
+checklist	C1	unlisted	-	First real trouble at wave 2 (around minute 2): a crowbar brute who blocks jabs plus a knife lad whose fast stabs punish mashing, while a car thief sneaks in.	
+checklist	C2	unlisted	-	Health is one bar with no lives: lose it, or let the car be driven off, and the night restarts from 11 PM.	
+checklist	C3	unlisted	-	Waves grow by the hour; 4 AM brings two armed at once, and 5 AM brings the gang's boss, the Gaffer, with a bat and feints.	
+checklist	C4	unlisted	-	Survive to 6 AM dawn to win.	
+browser	HeadlessChrome/153.0.0.0
+scene	play	0	title
+scene	play	1	play
+digits	log	38px "Segoe Print", "Bradley Hand", "Chalkboard SE", "Comic Sans MS", "Comic Neue", cursive	tabular	0
+digits	log	64px "Segoe Print", "Bradley Hand", "Chalkboard SE", "Comic Sans MS", "Comic Neue", cursive	tabular	0
+measure	step-time	play	0.022	5.600	482
+lane	play	stop	8.0	819
+uncaught	play	0
+text	play	canvas	666,239,811,256	40.3	4.79	inside	OFF LICENCE
+text	play	canvas	159,23,197,36	30.0	12.19	inside	YOU
+text	play	canvas	582,20,699,42	51.0	13.94	inside	11:00 PM
+text	play	canvas	544,70,591,82	28.5	12.19	inside	Hoodie
+text	play	canvas	960,25,1034,37	28.5	12.19	inside	HOTWIRE
+text	play	canvas	159,536,204,549	30.0	12.19	inside	FISTS
+text	play	canvas	270,537,344,550	22.5	6.51	inside	facing: shutter
+text	play	canvas	592,472,688,491	33.0	13.94	inside	J  to jab him
+screen	play	drawn
+responds	changed	274
