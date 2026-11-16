@@ -1,0 +1,143 @@
+# The one-shot's small check (check-run/1).
+# Written by one-shot-check.sh --record: the results are /prototype's reading of
+# evidence/self-check.tsv; never edited by hand.
+kind: check-run/1
+engine: web
+browser: "HeadlessChrome/153.0.0.0"
+time: "2026-11-16 19:47:43"
+checks:
+  - id: boots
+    result: pass
+    evidence:
+      - "evidence/self-check.tsv"
+  - id: shot
+    result: not_run
+    mark: not assessed
+    why: "the check's headless Chrome times out in this sandbox even on the bare starter; play shots taken with Playwright are in evidence/play.png, back-view.png and kick.png and were looked at"
+    evidence:
+  - id: outlines
+    result: pass
+    evidence:
+      - "evidence/figures.png"
+  - id: brief-words
+    result: pass
+    evidence:
+      - "evidence/brief-words.tsv"
+  - id: emoji
+    result: pass
+    evidence:
+      - "evidence/self-check.tsv"
+  - id: nearest-game
+    result: pass
+    evidence:
+      - "evidence/nearest-game.txt"
+brief_checklist:
+  - id: L1
+    result: pass
+    evidence: "evidence/play.png"
+    item: "Look: a graphite pencil drawing on off-white paper, as if the whole night is sketched in a notebook; loose, slightly wobbling lines redrawn a few times a second (line boil), cross-hatching for every shadow, heavy smudged darks in the corners; one accent colour only, a red pencil for hits, blood and the off licence's neon sign. A bare bulb swinging over the ramp throws a circle of light where the hatching thins. Every figure drawn, no emoji, no plain circles."
+  - id: L2
+    result: pass
+    evidence: "index.html:604"
+    item: "References: Sifu for martial-arts depth (parry timing, guard breaks, strings; values only) *(guessed)*."
+  - id: L3
+    result: pass
+    evidence: "evidence/back-view.png"
+    item: "View: first person, 2.5D (drawn perspective) · Camera: fixed eye height, facing the shutter onto the alley; one key turns you 180° to face the car on its ramp. Your own arms and legs drawn in the foreground."
+  - id: F1
+    result: pass
+    evidence: "index.html:1105"
+    item: "First-person fists and feet drawn on screen, each move with its own pose: jab, cross, hook, elbow, front kick, spinning back kick, guard, parry"
+  - id: F2
+    result: pass
+    evidence: "index.html:467"
+    item: "Combo strings (J J K, J K K, K K L ...) listed on the pause screen"
+  - id: F3
+    result: pass
+    evidence: "index.html:604"
+    item: "Guard to block (chip damage) and a timed parry that staggers and opens a counter window"
+  - id: F4
+    result: pass
+    evidence: "index.html:643"
+    item: "Slip left/right dodges"
+  - id: F5
+    result: pass
+    evidence: "evidence/figures.png"
+    item: "5 enemy kinds, each attacking differently: hoodie thug, crowbar brute, knife lad, car thief, the Gaffer (boss)"
+  - id: F6
+    result: pass
+    evidence: "evidence/back-view.png"
+    item: "The car on the ramp, a HOTWIRE bar, and turning round to defend it"
+  - id: F7
+    result: pass
+    evidence: "index.html:650"
+    item: "Tyre iron from the workbench: heavier hits, breaks after a few swings"
+  - id: F8
+    result: pass
+    evidence: "index.html:510"
+    item: "Night clock 11 PM to 6 AM, a wave an hour, combo grade per hit string"
+  - id: F9
+    result: not_run
+    mark: not assessed
+    why: "pencil look passes (play.png); the Web Audio sounds (punch, parry clang, creak, sparks, bell) are built but a shot cannot show sound"
+    evidence: "index.html:398"
+    item: "Pencil look with line boil, hatching, red accent; sound through Web Audio"
+  - id: S1
+    result: pass
+    evidence: "evidence/back-view.png"
+    item: "protecting the car · in the slice"
+  - id: S2
+    result: pass
+    evidence: "index.html:650"
+    item: "melee weapons · thin stand-in *(guessed)*"
+  - id: S3
+    result: pass
+    evidence: "index.html:465"
+    item: "combos and parries · in the slice"
+  - id: M1
+    result: pass
+    evidence: "evidence/play.png"
+    item: "11 PM."
+  - id: M2
+    result: pass
+    evidence: "evidence/play.png"
+    item: "The shutter is half up; across the alley the off licence sign buzzes red."
+  - id: M3
+    result: pass
+    evidence: "index.html:523"
+    item: "One lone hoodie walks in under the shutter."
+  - id: M4
+    result: pass
+    evidence: "index.html:786"
+    item: "On-screen hints teach by doing: jab him (J), then he winds up a slow haymaker with a clear flash, and the hint says \"tap SPACE as it lands\": the parry staggers him with a crack, and the follow-up \"J J K\" lands a red-lined one-two-hook that drops him."
+  - id: M5
+    result: pass
+    evidence: "evidence/back-view.png"
+    item: "Ten seconds later two more arrive and one slips past you toward the car; the HOTWIRE bar starts filling and \"S\" turns you round to drag him off the motor."
+  - id: M6
+    result: not_run
+    mark: not assessed
+    why: "whether the turn with a robber at your back pays off is a feel, for your play"
+    item: "That turn, with the other robber at your back, is the hook paying off."
+  - id: C1
+    result: pass
+    evidence: "index.html:421"
+    item: "First real trouble at wave 2 (around minute 2): a crowbar brute who blocks jabs plus a knife lad whose fast stabs punish mashing, while a car thief sneaks in."
+  - id: C2
+    result: pass
+    evidence: "index.html:776"
+    item: "Health is one bar with no lives: lose it, or let the car be driven off, and the night restarts from 11 PM."
+  - id: C3
+    result: pass
+    evidence: "index.html:421"
+    item: "Waves grow by the hour; 4 AM brings two armed at once, and 5 AM brings the gang's boss, the Gaffer, with a bat and feints."
+  - id: C4
+    result: pass
+    evidence: "index.html:817"
+    item: "Survive to 6 AM dawn to win."
+measures:
+  - id: step-time
+    value: 5.600
+    unit: ms
+    by: browser
+    detail: "mean 0.022 ms, slowest 5.600 ms, 482 steps"

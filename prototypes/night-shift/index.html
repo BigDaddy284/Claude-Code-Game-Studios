@@ -1,0 +1,1408 @@
+<!doctype html>
+<!-- PROTOTYPE - NOT FOR PRODUCTION -->
+<!-- Question: Does first-person martial arts, with parries and combo strings, feel sharp and tense enough to hold a whole night shift? -->
+<!-- Date: 2026-11-16 -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Night Shift</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #1d1b19; overflow: hidden; }
+  body { font-variant-numeric: tabular-nums; }
+  canvas { display: block; margin: 0 auto; }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<script src="config.js"></script>
+<script>
+'use strict';
+// Night Shift: guard a stolen classic car in a back-alley garage until dawn, in first person,
+// with your fists, feet and a tyre iron. Everything is drawn in code as a pencil sketch.
+
+// ---- Built to be checked ----------------------------------------------------------------
+const params = new URLSearchParams(location.search);
+const tune = new Proxy({}, { get: (_, k) => CONFIG[k].value }); // live: tune.speed is CONFIG.speed.value
+const STEP = 1 / 60;            // simulation step in seconds; motion is per second, never per frame
+const W = 1280, H = 720;        // logical size
+const PIXEL = false;
+const FONT = "'Segoe Print','Bradley Hand','Chalkboard SE','Comic Sans MS','Comic Neue',cursive";
+const TITLE = 'Night Shift';
+const CONTROLS = [
+  'J  jab      K  cross      L  kick     (mouse: left jab, right cross)',
+  'SPACE  hold to guard, tap just as a blow lands to PARRY',
+  'A / D  slip left / right       S  turn round to face the car',
+  'E  grab the tyre iron (at the workbench)      ESC  pause + move list      M  mute',
+];
+const clock = window.GAME_CLOCK || { now: () => performance.now() / 1000 }; // a check may inject one
+const CHEAP = params.get('render') === 'cheap';
+let seed;
+function rng() { // mulberry32; every gameplay random call reads this, never Math.random
+  seed = (seed + 0x6D2B79F5) | 0;
+  let t = Math.imul(seed ^ (seed >>> 15), seed | 1);
+  t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+}
+const events = [];
+
+// ---- Screen ---------------------------------------------------------------------------
+const canvas = document.getElementById('game');
+const CTX_OPTS = CHEAP ? { willReadFrequently: true } : {}; // a check's software browser draws faster on the CPU
+const mainCtx = canvas.getContext('2d', CTX_OPTS);
+let ctx = mainCtx; // swapped to an offscreen context while the backgrounds are prerendered
+function fit() {
+  const k = Math.min(innerWidth / W, innerHeight / H);
+  const s = k;
+  const r = s * (devicePixelRatio || 1);
+  canvas.width = Math.round(W * r); canvas.height = Math.round(H * r);
+  canvas.style.width = Math.round(W * s) + 'px'; canvas.style.height = Math.round(H * s) + 'px';
+  canvas.style.marginTop = Math.max(0, Math.floor((innerHeight - H * s) / 2)) + 'px';
+  mainCtx.setTransform(r, 0, 0, r, 0, 0); mainCtx.imageSmoothingEnabled = true;
+}
+addEventListener('resize', fit); fit();
+function text(s, x, y, size, c, align = 'center') {
+  ctx.fillStyle = c; ctx.font = `${size}px ${FONT}`; ctx.textAlign = align;
+  ctx.textBaseline = 'middle'; ctx.fillText(s, x, y);
+}
+
+// ---- Pencil kit: visual only, never gameplay --------------------------------------------
+const PAPER = '#ebe4d3', PAPER2 = '#e2dac6';
+const RED = '#b3261e';
+const ink = a => `rgba(36,32,30,${a})`;
+const red = a => `rgba(179,38,30,${a})`;
+let boil = 0, jc = 0, vt = 0; // boil: which redraw of the sketch (8 a second); vt: visual time
+function vr() { // deterministic per boil frame and draw order, so lines wobble 8 times a second
+  let x = (boil * 374761393 + (jc++) * 668265263 + 1013904223) | 0;
+  x = Math.imul(x ^ (x >>> 13), 1274126177); x ^= x >>> 16;
+  return (x >>> 0) / 4294967296;
+}
+const jit = a => (vr() - 0.5) * 2 * a;
+const lerp = (a, b, t) => a + (b - a) * t;
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const easeOut = t => 1 - (1 - t) * (1 - t);
+const easeIn = t => t * t;
+
+function sline(x1, y1, x2, y2, w = 1.6, a = 0.85, j = 1.4, col = ink) {
+  ctx.lineCap = 'round';
+  const ox = (x2 - x1) * 0.04, oy = (y2 - y1) * 0.04; // a pencil line overshoots its corners a hair
+  for (let p = 0; p < 2; p++) {
+    ctx.strokeStyle = col(p ? a * 0.45 : a); ctx.lineWidth = p ? w * 0.6 : w;
+    ctx.beginPath();
+    ctx.moveTo(x1 - ox * p + jit(j), y1 - oy * p + jit(j));
+    ctx.quadraticCurveTo((x1 + x2) / 2 + jit(j * 1.6), (y1 + y2) / 2 + jit(j * 1.6), x2 + ox * p + jit(j), y2 + oy * p + jit(j));
+    ctx.stroke();
+  }
+}
+function spath(pts, close, w = 1.6, a = 0.85, j = 1.4, col = ink) {
+  const n = pts.length;
+  for (let i = 0; i < (close ? n : n - 1); i++) {
+    const p = pts[i], q = pts[(i + 1) % n];
+    sline(p[0], p[1], q[0], q[1], w, a, j, col);
+  }
+}
+function ellipsePts(cx, cy, rx, ry, n = 14, rot = 0) {
+  const pts = [];
+  for (let i = 0; i < n; i++) {
+    const a = rot + i / n * Math.PI * 2;
+    pts.push([cx + Math.cos(a) * rx, cy + Math.sin(a) * ry]);
+  }
+  return pts;
+}
+function bbox(pts) {
+  let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+  for (const [x, y] of pts) { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); }
+  return [x0, y0, x1, y1];
+}
+// Parallel pencil strokes over a box at an angle; the caller clips.
+function hatchBox(x0, y0, x1, y1, ang, gap, a, w = 1.1, col = ink, broken = false) {
+  const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2, R = Math.hypot(x1 - x0, y1 - y0) / 2 + 4;
+  const dx = Math.cos(ang), dy = Math.sin(ang), nx = -dy, ny = dx;
+  ctx.lineWidth = w; ctx.lineCap = 'round';
+  for (let o = -R; o <= R; o += gap) {
+    const g = gap * 0.25;
+    const bx = cx + nx * (o + jit(g)), by = cy + ny * (o + jit(g));
+    ctx.strokeStyle = col(a * (0.7 + vr() * 0.5));
+    ctx.beginPath();
+    if (broken) { // short strokes, the way a hand hatches a big area
+      let s = -R + vr() * 30;
+      while (s < R) {
+        const len = 60 + vr() * 140;
+        ctx.moveTo(bx + dx * s, by + dy * s); ctx.lineTo(bx + dx * Math.min(R, s + len) + jit(1), by + dy * Math.min(R, s + len) + jit(1));
+        s += len + 4 + vr() * 12;
+      }
+    } else {
+      ctx.moveTo(bx - dx * R + jit(2), by - dy * R + jit(2)); ctx.lineTo(bx + dx * R + jit(2), by + dy * R + jit(2));
+    }
+    ctx.stroke();
+  }
+}
+function polyPath(pts) { ctx.beginPath(); pts.forEach(([x, y], i) => i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)); ctx.closePath(); }
+// A filled pencil shape: paper fill, hatched by tone (0 none .. 1 near black), sketched outline.
+function shape(pts, tone, ang = 0.9, w = 1.6, fill = PAPER, cross = tone > 0.62) {
+  polyPath(pts); ctx.fillStyle = fill; ctx.fill();
+  if (tone > 0.02) {
+    ctx.save(); polyPath(pts); ctx.clip();
+    const [x0, y0, x1, y1] = bbox(pts);
+    const gap = lerp(13, 3.2, tone);
+    hatchBox(x0, y0, x1, y1, ang, gap, 0.55);
+    if (cross) hatchBox(x0, y0, x1, y1, ang + 1.3, gap * 1.4, 0.45);
+    ctx.restore();
+  }
+  spath(pts, true, w, 0.9, Math.max(0.8, w * 0.7));
+}
+function limb(a, b, wa, wb, tone, w = 1.6, ang = 0.9) {
+  const dx = b.x - a.x, dy = b.y - a.y, L = Math.hypot(dx, dy) || 1, nx = -dy / L, ny = dx / L;
+  const pts = [[a.x + nx * wa, a.y + ny * wa], [b.x + nx * wb, b.y + ny * wb], [b.x + dx / L * wb * 0.6, b.y + dy / L * wb * 0.6],
+    [b.x - nx * wb, b.y - ny * wb], [a.x - nx * wa, a.y - ny * wa], [a.x - dx / L * wa * 0.5, a.y - dy / L * wa * 0.5]];
+  shape(pts, tone, ang, w);
+}
+function scribble(x, y, r, n, col, a = 0.8, w = 2) { // a quick tight scrawl
+  ctx.strokeStyle = col(a); ctx.lineWidth = w; ctx.beginPath();
+  for (let i = 0; i <= n; i++) {
+    const px = x + jit(r), py = y + jit(r * 0.7);
+    i ? ctx.lineTo(px, py) : ctx.moveTo(px, py);
+  }
+  ctx.stroke();
+}
+function burst(x, y, r, col, n = 9, a = 0.9) { // impact: strokes flying out
+  for (let i = 0; i < n; i++) {
+    const ang = i / n * Math.PI * 2 + jit(0.25);
+    const r0 = r * (0.35 + vr() * 0.2), r1 = r * (0.8 + vr() * 0.5);
+    sline(x + Math.cos(ang) * r0, y + Math.sin(ang) * r0, x + Math.cos(ang) * r1, y + Math.sin(ang) * r1, 2.6, a, 1.5, col);
+  }
+}
+
+// ---- Offscreen layers: paper and the two views, three redraws each for the line boil ----
+function offscreen(fn, b) {
+  const c = document.createElement('canvas'); c.width = W; c.height = H;
+  const saved = ctx; ctx = c.getContext('2d', CTX_OPTS); boil = b; jc = 0;
+  fn(); ctx = saved; return c;
+}
+function paperBase() {
+  ctx.fillStyle = PAPER; ctx.fillRect(0, 0, W, H);
+  for (let i = 0; i < 2600; i++) { // grain
+    ctx.fillStyle = vr() < 0.5 ? 'rgba(120,105,80,0.06)' : 'rgba(255,255,255,0.12)';
+    ctx.fillRect(vr() * W, vr() * H, 1 + vr() * 2, 1 + vr() * 2);
+  }
+  for (let i = 0; i < 70; i++) { // fibres
+    const x = vr() * W, y = vr() * H;
+    ctx.strokeStyle = 'rgba(110,95,70,0.07)'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + jit(30), y + jit(30)); ctx.stroke();
+  }
+}
+const VP = { x: 640, y: 300 };
+function room(back) { // the garage box: ceiling, side walls, floor, back wall frame
+  paperBase();
+  // ceiling
+  shape([[0, 0], [W, 0], [980, 120], [300, 120]], 0.78, -0.2, 1.4, PAPER2);
+  for (let i = 1; i < 6; i++) { // roof beams
+    const x = lerp(300, 980, i / 6);
+    sline(x, 120, lerp(-200, 1480, i / 6), 0, 3, 0.7, 2);
+  }
+  // left wall, right wall
+  shape([[0, 0], [300, 120], [300, 470], [0, 720]], 0.6, 1.2, 1.4, PAPER2);
+  shape([[W, 0], [980, 120], [980, 470], [W, 720]], 0.6, -1.2, 1.4, PAPER2);
+  // floor with perspective seams and oil stains
+  shape([[0, 720], [300, 470], [980, 470], [W, 720]], 0.25, 0.05, 1.4);
+  for (let i = 0; i <= 8; i++) sline(lerp(300, 980, i / 8), 470, lerp(-500, 1780, i / 8), 720, 1, 0.35, 2);
+  for (const yy of [500, 545, 610, 700]) {
+    const k = (yy - 470) / 250; sline(lerp(300, 0, k), yy, lerp(980, W, k), yy, 1, 0.3, 2);
+  }
+  for (const [x, y, rx, ry] of [[470, 560, 70, 14], [860, 640, 110, 20], [590, 690, 60, 10]]) {
+    ctx.save(); polyPath(ellipsePts(x, y, rx, ry, 16)); ctx.clip(); hatchBox(x - rx, y - ry, x + rx, y + ry, 0.3, 3.5, 0.5); ctx.restore();
+    spath(ellipsePts(x, y, rx, ry, 16), true, 1, 0.5, 2);
+  }
+  // drain grate
+  shape([[600, 600], [690, 600], [700, 618], [592, 618]], 0.9, 0, 1.2);
+  // a strip light, dead, on the beam
+  shape([[560, 128], [720, 128], [712, 138], [568, 138]], 0.1, 0, 1.2);
+}
+function bricks(x0, y0, x1, y1, bw = 46, bh = 18, a = 0.45) {
+  for (let y = y0, r = 0; y < y1; y += bh, r++) {
+    sline(x0, y, x1, y, 1, a, 1.5);
+    for (let x = x0 + (r % 2 ? bw / 2 : 0); x < x1; x += bw) sline(x, y, x, Math.min(y1, y + bh), 1, a, 1);
+  }
+}
+function tyreStack(x, y, r, n) {
+  for (let i = 0; i < n; i++) {
+    const yy = y - i * r * 0.55;
+    shape(ellipsePts(x, yy, r, r * 0.34, 18), 0.85, 0.3, 1.6, PAPER2);
+    shape(ellipsePts(x, yy - 3, r * 0.5, r * 0.15, 14), 0.2, 0.3, 1.2);
+    for (let k = 0; k < 7; k++) { const a = k / 7 * Math.PI; sline(x + Math.cos(a) * r * 0.75, yy + Math.sin(a) * r * 0.3, x + Math.cos(a) * r * 0.95, yy + Math.sin(a) * r * 0.33, 1, 0.4, 0.8); }
+  }
+}
+function pegboard(x0, y0, x1, y1) {
+  shape([[x0, y0], [x1, y0 - 40], [x1, y1 + 30], [x0, y1]], 0.35, 1.0, 1.4);
+  const tools = [[x0 + 40, y0 + 40, 'spanner'], [x0 + 95, y0 + 30, 'hammer'], [x0 + 150, y0 + 22, 'spanner'], [x0 + 200, y0 + 18, 'saw']];
+  for (const [x, y, t] of tools) {
+    if (t === 'spanner') { shape([[x - 5, y], [x + 5, y], [x + 6, y + 80], [x - 6, y + 80]], 0.4, 0.5, 1.2); spath(ellipsePts(x, y - 4, 12, 9, 10), true, 1.3, 0.8, 1); spath(ellipsePts(x, y + 88, 11, 9, 10), true, 1.3, 0.8, 1); }
+    if (t === 'hammer') { shape([[x - 4, y + 10], [x + 4, y + 10], [x + 5, y + 95], [x - 5, y + 95]], 0.2, 0.5, 1.2); shape([[x - 22, y], [x + 22, y], [x + 22, y + 16], [x - 22, y + 16]], 0.8, 0.5, 1.4); }
+    if (t === 'saw') { shape([[x, y], [x + 50, y + 4], [x + 50, y + 80], [x, y + 50]], 0.2, 0.3, 1.2); for (let k = 0; k < 8; k++) sline(x + k * 6, y + 50 + k * 4, x + k * 6 + 3, y + 56 + k * 4, 1, 0.6, 0.5); }
+  }
+}
+function darkness(cx, cy) { // night: graded hatch outside the bulb's pool, smudged corners
+  for (const [r, ang, gap, a] of [[250, 0.8, 5, 0.32], [340, -0.75, 4.5, 0.36], [440, 0.15, 4, 0.4], [560, 1.4, 3.6, 0.45], [700, -0.3, 3.2, 0.5]]) {
+    ctx.save(); ctx.beginPath(); ctx.rect(0, 0, W, H); ctx.ellipse(cx, cy, r * 1.35, r, 0, 0, Math.PI * 2); ctx.clip('evenodd');
+    hatchBox(0, 0, W, H, ang, gap, a, 1.1, ink, true); ctx.restore();
+  }
+  const g = ctx.createRadialGradient(cx, cy, 160, cx, cy, 760);
+  g.addColorStop(0, 'rgba(30,26,24,0)'); g.addColorStop(0.35, 'rgba(30,26,24,0.3)'); g.addColorStop(0.7, 'rgba(30,26,24,0.6)'); g.addColorStop(1, 'rgba(24,20,18,0.85)');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+}
+function drawFrontBG() {
+  room(false);
+  // back wall around the shutter
+  shape([[300, 120], [980, 120], [980, 470], [300, 470]], 0.45, 1.1, 1.6, PAPER2);
+  bricks(300, 124, 400, 470); bricks(880, 124, 980, 470);
+  // the alley through the opening, below the half-up shutter
+  shape([[400, 270], [880, 270], [880, 470], [400, 470]], 0.92, 0.5, 2.4, PAPER2);
+  // across the alley: the off licence front (lit window), brick, a bin, a puddle
+  shape([[620, 300], [860, 300], [860, 460], [620, 460]], 0.35, 1.0, 1.8);
+  shape([[640, 345], [840, 345], [840, 440], [640, 440]], 0.08, 0, 1.4, '#efe9da');
+  for (let sx = 650; sx < 835; sx += 16) { // bottles on shelves in the window
+    for (const sy of [395, 438]) shape([[sx, sy], [sx + 9, sy], [sx + 9, sy - 26], [sx + 6, sy - 34], [sx + 3, sy - 34], [sx, sy - 26]], 0.35 + (sx % 3) * 0.12, 1.4, 1);
+    sline(640, 396, 840, 396, 1.4, 0.7, 1);
+  }
+  shape([[660, 302], [840, 302], [840, 330], [660, 330]], 0.15, 0, 1.6); // sign board (letters drawn live)
+  shape([[410, 360], [470, 360], [478, 460], [402, 460]], 0.7, 1.2, 1.8); // wheelie bin
+  shape([[400, 348], [482, 348], [486, 362], [396, 362]], 0.85, 0, 1.6);
+  spath(ellipsePts(560, 455, 50, 6, 12), true, 1.2, 0.6, 1.5);
+  sline(400, 470, 880, 470, 2.4, 0.9, 1);
+  // shutter guide rails
+  shape([[390, 160], [402, 160], [402, 470], [390, 470]], 0.6, 0, 1.4);
+  shape([[878, 160], [890, 160], [890, 470], [878, 470]], 0.6, 0, 1.4);
+  // left wall: tyres and an old poster; right wall: tools, oil drum
+  tyreStack(150, 560, 85, 4);
+  tyreStack(255, 470, 48, 3);
+  shape([[60, 150], [190, 175], [190, 330], [60, 320]], 0.15, 0.4, 1.4);
+  text('MOT', 125, 205, 30, ink(0.7)); text('while u wait', 125, 245, 18, ink(0.6));
+  sline(80, 280, 170, 285, 1, 0.5, 2); sline(80, 300, 160, 303, 1, 0.5, 2);
+  pegboard(1010, 190, 1240, 380);
+  shape([[1060, 520], [1180, 520], [1185, 690], [1055, 690]], 0.55, 1.4, 1.8); // oil drum
+  spath(ellipsePts(1120, 520, 60, 14, 16), true, 1.6, 0.8, 1.5);
+  sline(1057, 580, 1183, 580, 1.4, 0.7, 1); sline(1056, 640, 1184, 640, 1.4, 0.7, 1);
+  darkness(640, 380);
+}
+function drawShutter() { // the half-up shutter: drawn over far robbers so they duck under it
+  shape([[402, 160], [878, 160], [878, 272], [402, 272]], 0.3, 0, 1.6, PAPER2);
+  for (let y = 168; y < 272; y += 10) sline(402, y, 878, y, 1.2, 0.6, 1);
+  shape([[402, 266], [878, 266], [878, 278], [402, 278]], 0.7, 0, 1.8); // bottom bar
+  shape([[628, 262], [652, 262], [652, 282], [628, 282]], 0.9, 0, 1.4); // handle
+}
+function carShape() { // a 60s grand tourer, side on: long bonnet, short tail, wire wheels
+  const body = [[330, 470], [345, 440], [400, 425], [560, 412], [620, 370], [700, 352], [790, 356], [850, 395], [930, 412], [968, 430], [972, 470], [935, 485], [330, 485]];
+  // shadow under
+  ctx.save(); polyPath(ellipsePts(650, 545, 330, 18, 18)); ctx.clip(); hatchBox(300, 520, 1000, 570, 0, 3, 0.5); ctx.restore();
+  shape(body, 0.18, 0.2, 2.6, '#efe9da');
+  ctx.save(); polyPath(body); ctx.clip(); // lower body shade + a chrome highlight left white
+  hatchBox(330, 450, 980, 490, 0.3, 4, 0.5); ctx.restore();
+  sline(350, 448, 960, 446, 1.6, 0.8, 1.5); // swage line
+  shape([[628, 372], [700, 357], [785, 360], [835, 396], [610, 400]], 0.75, 1.0, 1.8); // glasshouse
+  sline(715, 358, 712, 400, 2, 0.85, 1);
+  shape([[600, 405], [608, 470], [760, 470], [770, 405]], 0.05, 0, 1.2, '#efe9da'); // door
+  sline(710, 425, 735, 425, 2.4, 0.9, 0.8); // handle
+  shape(ellipsePts(350, 446, 14, 12, 12), 0.05, 0, 1.6, '#f4efe3'); // headlight
+  sline(332, 470, 400, 472, 3, 0.8, 1); sline(930, 470, 972, 468, 3, 0.8, 1); // bumpers
+  for (const wx of [440, 860]) {
+    shape(ellipsePts(wx, 488, 54, 54, 20), 0.95, 0.4, 2.2, PAPER2);
+    shape(ellipsePts(wx, 488, 34, 34, 18), 0.05, 0, 1.6, '#efe9da');
+    for (let k = 0; k < 16; k++) { const a = k / 16 * Math.PI * 2; sline(wx, 488, wx + Math.cos(a) * 33, 488 + Math.sin(a) * 33, 0.8, 0.6, 0.5); }
+    shape(ellipsePts(wx, 488, 9, 9, 8), 0.6, 0, 1.4);
+    // wheel arch
+    ctx.save(); ctx.beginPath(); ctx.arc(wx, 488, 62, Math.PI, 0); ctx.lineWidth = 2.4; ctx.strokeStyle = ink(0.85); ctx.stroke(); ctx.restore();
+  }
+}
+function drawBackBG() {
+  room(true);
+  shape([[300, 120], [980, 120], [980, 470], [300, 470]], 0.4, -1.1, 1.6, PAPER2);
+  bricks(300, 124, 980, 470, 60, 26, 0.38); // breeze blocks
+  // back door, on the left wall, in perspective
+  shape([[90, 200], [215, 225], [215, 545], [90, 590]], 0.88, 1.3, 2.2);
+  shape([[86, 196], [219, 221], [219, 230], [86, 206]], 0.5, 0, 1.4);
+  shape([[195, 380], [205, 382], [205, 395], [195, 393]], 0.2, 0, 1.2);
+  // two-post ramp
+  shape([[285, 200], [312, 200], [312, 560], [285, 560]], 0.55, 0, 1.8);
+  shape([[968, 200], [995, 200], [995, 560], [968, 560]], 0.55, 0, 1.8);
+  shape([[312, 498], [968, 498], [968, 512], [312, 512]], 0.7, 0, 1.6);
+  carShape();
+  // workbench on the right wall with a vice and a lamp
+  shape([[1000, 455], [1280, 430], [1280, 455], [1000, 478]], 0.25, 0.1, 1.8);
+  shape([[1010, 478], [1030, 478], [1030, 640], [1010, 640]], 0.6, 0, 1.4);
+  shape([[1240, 455], [1262, 452], [1262, 680], [1240, 680]], 0.6, 0, 1.4);
+  shape([[1180, 404], [1230, 400], [1232, 440], [1182, 444]], 0.7, 0.5, 1.6); // vice
+  pegboard(1020, 200, 1250, 360);
+  tyreStack(130, 640, 70, 3);
+  darkness(640, 360);
+}
+let LAYERS = null;
+const BOILS = CHEAP ? [0] : [0, 1, 2]; // a cheap check render keeps one redraw of the background
+function buildLayers() {
+  LAYERS = {
+    front: BOILS.map(b => offscreen(drawFrontBG, b)),
+    back: BOILS.map(b => offscreen(drawBackBG, b + 10)),
+    shutter: BOILS.map(b => offscreen(drawShutter, b + 20)),
+    paper: offscreen(paperBase, 99),
+  };
+}
+const layer = k => LAYERS[k][Math.floor(vt * 8) % LAYERS[k].length];
+
+// ---- Input: keys by position (event.code), OS key repeat ignored ------------------------
+const down = new Set(), hit = new Set();
+const pressed = code => hit.has(code);
+addEventListener('keydown', e => {
+  startAudio();
+  if (!e.repeat) { down.add(e.code); hit.add(e.code); }
+  if (e.code === 'Space' || e.code.startsWith('Arrow') || e.code === 'Tab') e.preventDefault();
+});
+addEventListener('keyup', e => down.delete(e.code));
+addEventListener('pointerdown', e => {
+  startAudio();
+  if (scene === 'title') { hit.add('Enter'); return; }
+  if (e.button === 0) hit.add('KeyJ'); else if (e.button === 2) hit.add('KeyK');
+});
+addEventListener('contextmenu', e => e.preventDefault());
+addEventListener('blur', () => down.clear());
+
+// ---- Audio: started on first input, mute on M --------------------------------------------
+let audio = null, muted = false;
+function startAudio() {
+  if (!audio) {
+    const ac = window.GAME_AUDIO || new (window.AudioContext || window.webkitAudioContext)();
+    const out = ac.createGain(); out.gain.value = muted ? 0 : tune.volume;
+    out.connect(ac.destination);
+    const nb = ac.createBuffer(1, ac.sampleRate, ac.sampleRate), d = nb.getChannelData(0);
+    let s = 12345; for (let i = 0; i < d.length; i++) { s = (s * 1103515245 + 12345) & 0x7fffffff; d[i] = s / 0x3fffffff - 1; }
+    audio = { ac, out, nb };
+  }
+  if (audio.ac.state === 'suspended') audio.ac.resume();
+}
+function setMuted(m) { muted = m; if (audio) audio.out.gain.value = m ? 0 : tune.volume; }
+addEventListener('tune', () => setMuted(muted));
+function tone(freq, dur, type = 'square', vol = 0.3, to = 0) {
+  if (!audio || muted) return;
+  const t = audio.ac.currentTime, o = audio.ac.createOscillator(), g = audio.ac.createGain();
+  o.type = type; o.frequency.setValueAtTime(freq, t);
+  if (to) o.frequency.exponentialRampToValueAtTime(to, t + dur);
+  g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+  o.connect(g).connect(audio.out); o.start(t); o.stop(t + dur);
+}
+function noise(dur, vol, type = 'lowpass', f0 = 1000, f1 = 0, q = 1) {
+  if (!audio || muted) return;
+  const ac = audio.ac, t = ac.currentTime, s = ac.createBufferSource(), f = ac.createBiquadFilter(), g = ac.createGain();
+  s.buffer = audio.nb; f.type = type; f.Q.value = q; f.frequency.setValueAtTime(f0, t);
+  if (f1) f.frequency.exponentialRampToValueAtTime(f1, t + dur);
+  g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+  s.connect(f).connect(g).connect(audio.out); s.start(t, Math.random() * 0.5); s.stop(t + dur);
+}
+const sfx = {
+  whoosh: () => noise(0.14, 0.12, 'bandpass', 700, 2600, 2),
+  punch: (p = 1) => { noise(0.09, 0.5 * p, 'lowpass', 1400, 200); tone(110 * p, 0.14, 'sine', 0.5, 45); },
+  block: () => { noise(0.07, 0.35, 'lowpass', 500); tone(180, 0.08, 'triangle', 0.2, 120); },
+  parry: () => { tone(1500, 0.09, 'square', 0.12); tone(2250, 0.35, 'triangle', 0.18, 1900); noise(0.05, 0.25, 'highpass', 3000); },
+  hurt: () => { tone(170, 0.25, 'sawtooth', 0.22, 70); noise(0.1, 0.35, 'lowpass', 600); },
+  fall: () => { tone(70, 0.35, 'sine', 0.5, 35); noise(0.25, 0.3, 'lowpass', 300); },
+  creak: () => { tone(240, 0.6, 'sawtooth', 0.05, 160); tone(250, 0.5, 'sawtooth', 0.04, 190); },
+  spark: () => noise(0.04, 0.12, 'highpass', 4000),
+  metal: () => { tone(900, 0.2, 'triangle', 0.18, 700); noise(0.06, 0.2, 'highpass', 2500); },
+  bell: () => { tone(660, 1.4, 'sine', 0.18); tone(990, 1.0, 'sine', 0.1); },
+  snap: () => { noise(0.12, 0.4, 'highpass', 1500); tone(400, 0.15, 'square', 0.1, 120); },
+  slip: () => noise(0.18, 0.1, 'bandpass', 400, 1200, 1.5),
+};
+
+// ---- The night: hours and who comes in --------------------------------------------------
+// '|' waits until the garage is clear. attackers: how many robbers swing at you at once.
+const WAVES = [
+  { hour: 11, pm: true, maxFront: 2, attackers: 1, list: ['thug', '|', 'thug', 'thief'] },
+  { hour: 12, maxFront: 2, attackers: 1, list: ['thug', 'knife', 'thief', 'thug'] },
+  { hour: 1, maxFront: 2, attackers: 1, list: ['brute', 'thug', 'thief', 'knife'] },
+  { hour: 2, maxFront: 3, attackers: 1, list: ['knife', 'knife', 'thief', 'brute', 'thug'] },
+  { hour: 3, maxFront: 3, attackers: 1, list: ['brute', 'thug', 'thief', 'brute', 'knife', 'thief'] },
+  { hour: 4, maxFront: 3, attackers: 2, list: ['brute', 'knife', 'thief', 'thug', 'brute', 'knife'] },
+  { hour: 5, maxFront: 3, attackers: 2, list: ['gaffer', 'thug', 'thief', 'thug', 'thief'] },
+];
+const KINDS = {
+  thug: { name: 'Hoodie', hp: () => tune.thugHp, speed: 1, patterns: ['hay', 'hay', 'jabjab'], blocks: [], armor: false, dodge: false,
+    taunts: ['Oi! Keys. Now.', 'Move, mate.', 'Nice motor, that.'] },
+  brute: { name: 'Crowbar Brute', hp: () => tune.bruteHp, speed: 0.75, patterns: ['overhead', 'overhead', 'sweep'], blocks: ['jab', 'cross'], armor: true, dodge: false,
+    taunts: ['You\'re in my way.', 'Don\'t be a hero.'] },
+  knife: { name: 'Knife Lad', hp: () => tune.knifeHp, speed: 1.3, patterns: ['flurry', 'stab', 'flurry'], blocks: [], armor: false, dodge: true,
+    taunts: ['Go on then.', 'Quick, aint I?'] },
+  thief: { name: 'Car Thief', hp: () => tune.thiefHp, speed: 1.5, patterns: ['shove'], blocks: [], armor: false, dodge: false,
+    taunts: ['Two minutes, that\'s all.'] },
+  gaffer: { name: 'The Gaffer', hp: () => tune.gafferHp, speed: 0.8, patterns: ['swing', 'double', 'feint', 'grab', 'swing'], blocks: ['jab'], armor: true, dodge: false,
+    taunts: ['That motor\'s MINE, son.', 'Last chance. Walk away.'] },
+};
+function pattern(name) {
+  const S = (wind, dmg, wp, sp, x = {}) => Object.assign({ wind, dmg, wp, sp }, x);
+  const gW = tune.gafferWindup, gD = tune.gafferDmg;
+  switch (name) {
+    case 'hay': return [S(tune.thugWindup, tune.thugDmg, 'windR', 'strikeR')];
+    case 'jabjab': return [S(tune.thugWindup * 0.65, tune.thugDmg * 0.6, 'windL', 'strikeL'), S(tune.thugWindup * 0.45, tune.thugDmg * 0.6, 'windR', 'strikeR')];
+    case 'overhead': return [S(tune.bruteWindup, tune.bruteDmg, 'windOver', 'strikeOver')];
+    case 'sweep': return [S(tune.bruteWindup * 0.85, tune.bruteDmg * 0.8, 'windSweep', 'sweep')];
+    case 'flurry': return [S(tune.knifeWindup * 1.4, tune.knifeDmg, 'windStab', 'stab'), S(tune.knifeWindup, tune.knifeDmg, 'windStab', 'stab'), S(tune.knifeWindup, tune.knifeDmg, 'windStab', 'stab')];
+    case 'stab': return [S(tune.knifeWindup * 1.7, tune.knifeDmg * 1.8, 'windStab', 'stab')];
+    case 'shove': return [S(0.55, tune.thiefDmg, 'windShove', 'shove')];
+    case 'swing': return [S(gW, gD, 'windSweep', 'sweep')];
+    case 'double': return [S(gW * 0.85, gD * 0.8, 'windSweep', 'sweep'), S(gW * 0.55, gD, 'windOver', 'strikeOver')];
+    case 'feint': return [S(gW * 0.7, 0, 'windOver', 'idle', { feint: true }), S(gW * 0.6, gD, 'windSweep', 'sweep')];
+    case 'grab': return [S(gW * 1.15, gD * 1.3, 'grabWind', 'grab', { unblock: true })];
+  }
+}
+
+// ---- Your moves and combo strings --------------------------------------------------------
+const MOVES = {
+  jab: { dur: () => tune.jabTime, dmg: () => tune.jabDmg, base: 'jab' },
+  cross: { dur: () => tune.crossTime, dmg: () => tune.crossDmg, base: 'cross', dodgeable: true },
+  kick: { dur: () => tune.kickTime, dmg: () => tune.kickDmg, base: 'kick', breaks: true, push: true },
+  hook: { dur: () => tune.hookTime, dmg: () => tune.hookDmg, base: 'hook', breaks: true, dodgeable: true, name: 'One-Two-Hook!' },
+  elbow: { dur: () => tune.elbowTime, dmg: () => tune.elbowDmg, base: 'elbow', breaks: true, name: 'Cross-Elbow!' },
+  spin: { dur: () => tune.spinTime, dmg: () => tune.spinDmg, base: 'spin', breaks: true, knock: true, dodgeable: true, name: 'Spinning Back Kick!' },
+  ironLight: { dur: () => tune.jabTime * 1.4, dmg: () => tune.jabDmg * tune.ironMult * 1.3, base: 'iron', breaks: true, iron: true },
+  ironHeavy: { dur: () => tune.crossTime * 1.45, dmg: () => tune.crossDmg * tune.ironMult * 1.3, base: 'iron', breaks: true, iron: true, dodgeable: true },
+};
+const STRINGS = { JJK: 'hook', JKK: 'elbow', KKL: 'spin' };
+const PREFIXES = new Set(); Object.keys(STRINGS).forEach(s => { for (let i = 1; i < s.length; i++) PREFIXES.add(s.slice(0, i)); });
+const MOVE_LIST = [
+  ['J', 'Jab: fast, light. Brutes and the Gaffer block it'],
+  ['K', 'Cross: harder. The knife lad can sway off it'],
+  ['L', 'Front kick: shoves them back, breaks a wind-up'],
+  ['J J K', 'One-Two-Hook: breaks guards'],
+  ['J K K', 'Cross-Elbow: breaks guards'],
+  ['K K L', 'Spinning Back Kick: knocks them down'],
+  ['SPACE tap', 'Parry, just as a blow lands: guard broken, x2 damage'],
+  ['SPACE hold', 'Guard: takes a little damage'],
+  ['A / D', 'Slip: dodge anything, even the red-flash grab'],
+  ['S', 'Turn round: stop thieves at the car'],
+  ['E', 'Tyre iron (at the bench): heavy hits, snaps after a few'],
+];
+
+// ---- Scenes ----------------------------------------------------------------------------
+let scene, state;
+let eid = 0;
+function reset() {
+  seed = Number(params.get('seed')) || CONFIG.seed;
+  state = {
+    t: 0, score: 0, gained: '',
+    wave: 0, queue: [], spawnT: 1.2, phase: 'intro', phaseT: 3.2, waveTotal: 1, waveDown: 0,
+    enemies: [], fx: [], decals: [], hotwire: 0, benchIron: true, doorT: 0, alertT: 0,
+    hitstop: 0, shake: 0, floored: 0, parries: 0, tut: 0, tutT: 0, hintT: 0, hint: '', seenThief: false, seenIron: false,
+    lose: '', best: 0,
+    p: {
+      hp: tune.playerHp, facing: 'front', turnT: 0, move: null, chain: [], chainT: 0, buf: null, guard: false,
+      parryT: -9, lastPressT: -9, parryAnim: 0, slipT: 0, slipDir: 0, slipCd: 0, stunT: 0, counterT: 0, counterMult: 1,
+      weapon: 'fists', ironUses: 0, hurtFlash: 0, combo: 0, comboT: 0, knuckles: 0,
+    },
+  };
+  startWave(0);
+}
+function startWave(i) {
+  state.wave = i; state.queue = WAVES[i].list.slice(); state.spawnT = 1.0;
+  state.waveTotal = state.queue.filter(x => x !== '|').length; state.waveDown = 0;
+  state.benchIron = true;
+}
+function hourLabel(i, min = 0) {
+  const w = WAVES[i], h = w ? w.hour : 6;
+  const pm = w ? !!w.pm : false;
+  return `${h}:${String(min).padStart(2, '0')} ${pm ? 'PM' : 'AM'}`;
+}
+function clockNow() {
+  if (state.phase === 'intro' || state.phase === 'breather') return hourLabel(state.wave, 0);
+  return hourLabel(state.wave, Math.min(59, Math.floor(59 * state.waveDown / Math.max(1, state.waveTotal))));
+}
+
+// Where a robber is on screen: depth 0 is in your face, 1 is the shutter.
+function scr(e) { const z = e.z; return { x: 640 + e.lane * lerp(560, 180, z), fy: lerp(748, 475, z), s: lerp(570, 190, z) }; }
+function spawn(kind) {
+  const k = KINDS[kind];
+  const e = { id: ++eid, kind, side: 'front', st: 'enter', stT: 0, z: 1.02, lane: (rng() - 0.5) * 0.9, tz: 0.5, tl: 0, hp: k.hp(), max: k.hp(),
+    J: null, atkT: 1, pat: null, pi: 0, slot: -1, flash: 0, taunt: '', tauntT: 0, ph: rng() * 6, fall: 0, gone: false, dodgeDir: 1, tut: false, alpha: 1 };
+  if (kind === 'thief') { e.st = 'slip'; e.lane = -0.5; }
+  else { e.tl = (rng() < 0.5 ? -1 : 1) * (0.45 + rng() * 0.4); e.tz = 0.42 + rng() * 0.16; }
+  if (state.wave === 0 && state.floored === 0 && kind === 'thug') e.tut = true;
+  if (rng() < 0.7 || kind === 'gaffer') { e.taunt = k.taunts[Math.floor(rng() * k.taunts.length)]; e.tauntT = 2.2; }
+  state.enemies.push(e);
+  events.push({ t: state.t, spawn: kind });
+}
+const alive = e => !['down', 'gone'].includes(e.st);
+const frontFighters = () => state.enemies.filter(e => e.side === 'front' && e.kind !== 'thief' && alive(e));
+
+function lose(why) {
+  state.lose = why;
+  state.gained = why === 'car' ? `They drove off with the motor at ${clockNow()}.` : `You went down at ${clockNow()}.`;
+  scene = 'over'; events.push({ t: state.t, over: why });
+}
+
+// ---- The player ------------------------------------------------------------------------
+function startAttack(key) {
+  const p = state.p;
+  const seq = p.chain.concat(key).join('');
+  let id = STRINGS[seq];
+  const fin = !!id;
+  if (!id) id = { J: 'jab', K: 'cross', L: 'kick' }[key];
+  if (p.weapon === 'iron' && id !== 'kick' && id !== 'spin') id = (id === 'jab') ? 'ironLight' : 'ironHeavy';
+  p.chain = fin ? [] : (PREFIXES.has(seq) ? seq.split('') : [key]);
+  p.move = { id, t: 0, dur: MOVES[id].dur(), done: false };
+  p.chainT = 0; p.buf = null;
+  sfx.whoosh();
+}
+function target() {
+  const p = state.p;
+  if (p.turnT > 0) return null;
+  if (p.facing === 'front') return state.enemies.find(e => e.side === 'front' && e.slot === 0 && alive(e) && e.z < 0.14) || null;
+  return state.enemies.find(e => e.side === 'back' && alive(e) && e.z < 0.16 && !['sneak', 'hotwire'].includes(e.st)) || null;
+}
+function hitPoint(e) { const s = scr(e); return { x: s.x, y: s.fy - s.s * 0.74 }; }
+function fx(kind, x, y, txt = '', life = 0.5, col = 'ink') { state.fx.push({ kind, x, y, txt, t: 0, life, col }); }
+function resolveHit() {
+  const p = state.p, m = MOVES[p.move.id];
+  const e = target();
+  if (!e || ['knock'].includes(e.st)) return;
+  const k = KINDS[e.kind], hp = hitPoint(e);
+  const loose = ['ready', 'recover', 'block', 'step', 'wait'].includes(e.st);
+  if (k.blocks.includes(m.base) && loose && p.counterT <= 0) {
+    e.st = 'block'; e.stT = 0; e.hp -= 1; sfx.block(); fx('text', hp.x, hp.y - 60, 'blocked', 0.6);
+    return;
+  }
+  if (k.dodge && m.dodgeable && loose && rng() < tune.knifeDodge) {
+    e.st = 'dodge'; e.stT = 0; e.dodgeDir = rng() < 0.5 ? -1 : 1; fx('text', hp.x, hp.y - 60, 'swayed off it', 0.6); return;
+  }
+  let dmg = m.dmg();
+  if (p.counterT > 0) dmg *= p.counterMult;
+  if (e.st === 'stagger') dmg *= tune.staggerBonus;
+  e.hp -= dmg; e.flash = 0.18;
+  p.combo++; p.comboT = 2.5; state.best = Math.max(state.best, p.combo); p.knuckles = Math.min(1, p.knuckles + 0.04);
+  state.hitstop = tune.hitstop * (m.breaks ? 1.6 : 1); state.shake = Math.max(state.shake, m.breaks ? 12 : 6);
+  sfx.punch(m.breaks ? 1.25 : 0.9);
+  if (m.iron) sfx.metal();
+  fx('hit', hp.x + jit(30), hp.y + jit(30), '', 0.32, 'red');
+  if (m.name) fx('text', hp.x, hp.y - 90, m.name, 0.9, 'red');
+  else if (p.counterT > 0) fx('text', hp.x, hp.y - 90, `counter x${p.counterMult.toFixed(1).replace('.0', '')}`, 0.7, 'red');
+  if (e.side === 'front' && state.decals.length < 60) state.decals.push({ x: hp.x + (rng() - 0.5) * 160, y: lerp(560, 700, rng()), r: 3 + rng() * 6 });
+  if (m.iron) {
+    p.ironUses--;
+    if (p.ironUses <= 0) { p.weapon = 'fists'; sfx.snap(); fx('text', 640, 520, 'The tyre iron snaps!', 1.2, 'red'); }
+  }
+  if (state.tut === 0 && m.base === 'jab') { state.tut = 1; }
+  if (state.tut === 2 && (m.base === 'hook' || e.hp <= 0)) state.tut = 3;
+  if (e.hp <= 0) { e.st = 'down'; e.stT = 0; e.fall = 0; e.slot = -1; sfx.fall(); state.floored++; state.waveDown++; if (state.tut < 3 && e.tut) state.tut = 3; return; }
+  if (e.st === 'windup' && k.armor && !m.breaks) { fx('text', hp.x, hp.y - 60, 'shrugs it off', 0.5); return; }
+  if (e.st === 'stagger') return; // a broken guard stays broken: keep hitting
+  if (m.knock) { e.st = 'knock'; e.stT = 0; e.fall = 0; e.z = Math.min(0.35, e.z + 0.1); return; }
+  e.st = 'hurt'; e.stT = 0; e.pat = null;
+  if (m.push) e.z = Math.min(0.4, e.z + tune.kickPush);
+}
+function hurtPlayer(dmg, from) {
+  const p = state.p;
+  p.hp -= dmg; p.stunT = tune.hitStun; p.combo = 0; p.hurtFlash = 0.45; p.move = null; p.chain = [];
+  state.shake = 16; sfx.hurt();
+  events.push({ t: state.t, hurt: Math.round(dmg), from });
+  if (p.hp <= 0) { p.hp = 0; lose('down'); }
+}
+// A robber's blow lands: slip, parry, guard, or take it.
+function impact(e, s) {
+  const p = state.p, hp = hitPoint(e);
+  const facingIt = p.facing === e.side && p.turnT <= 0;
+  if (!facingIt) {
+    hurtPlayer(s.dmg * tune.behindMult, e.kind); fx('text', 640, 330, 'From behind!', 0.8, 'red'); return;
+  }
+  if (p.slipT > 0.03) {
+    sfx.slip(); fx('text', 640 - p.slipDir * 260, 330, 'slipped', 0.6);
+    p.counterT = 0.6; p.counterMult = tune.slipCounterMult; return;
+  }
+  if (!s.unblock && state.t - p.parryT <= tune.parryWindow) {
+    sfx.parry(); state.parries++; state.hitstop = 0.12; state.shake = 8;
+    e.st = 'stagger'; e.stT = 0; e.pat = null;
+    p.counterT = tune.counterTime; p.counterMult = tune.counterMult; p.parryAnim = 0.3; p.parryT = -9;
+    fx('parry', hp.x, hp.y, '', 0.45, 'red'); fx('text', 640, 250, 'PARRY!', 0.9, 'red');
+    if (state.tut <= 1) state.tut = 2;
+    events.push({ t: state.t, parry: e.kind });
+    return;
+  }
+  if (p.guard && !s.unblock) {
+    p.hp -= s.dmg * tune.guardChip; sfx.block(); state.shake = 5; fx('text', 640, 300, 'blocked', 0.5);
+    if (p.hp <= 0) { p.hp = 0; lose('down'); }
+    return;
+  }
+  if (s.unblock && (p.guard || state.t - p.parryT <= tune.parryWindow)) fx('text', 640, 260, "Can't block a grab: SLIP it!", 1.2, 'red');
+  hurtPlayer(s.dmg, e.kind);
+}
+function updatePlayer(dt) {
+  const p = state.p;
+  for (const k of ['stunT', 'slipT', 'slipCd', 'counterT', 'parryAnim', 'hurtFlash', 'comboT']) p[k] = Math.max(0, p[k] - dt);
+  if (p.comboT <= 0) p.combo = 0;
+  if (p.turnT > 0) {
+    const before = p.turnT; p.turnT = Math.max(0, p.turnT - dt);
+    if (before > tune.turnTime / 2 && p.turnT <= tune.turnTime / 2) p.facing = p.facing === 'front' ? 'back' : 'front';
+  }
+  if (p.stunT > 0) { p.guard = false; return; }
+  const tapS = pressed('KeyS') || pressed('ArrowDown') || pressed('Tab');
+  if (tapS && p.turnT <= 0) { p.turnT = tune.turnTime; p.move = null; p.buf = null; p.chain = []; sfx.whoosh(); } // turning cancels whatever you were doing
+  const sl = pressed('KeyA') || pressed('ArrowLeft') ? -1 : pressed('KeyD') || pressed('ArrowRight') ? 1 : 0;
+  if (sl && p.slipCd <= 0 && (!p.move || p.move.done)) { p.move = null; p.slipT = tune.slipTime; p.slipDir = sl; p.slipCd = tune.slipCooldown; sfx.slip(); }
+  if (pressed('Space')) {
+    if (state.t - p.lastPressT > tune.parryCooldown) p.parryT = state.t;
+    p.lastPressT = state.t;
+    if (p.move && p.move.done) p.move = null; // defence cancels a move's follow-through
+  }
+  if (pressed('KeyE') && p.facing === 'back' && p.turnT <= 0 && state.benchIron && p.weapon === 'fists') {
+    p.weapon = 'iron'; p.ironUses = tune.ironUses; state.benchIron = false; sfx.metal(); fx('text', 1100, 380, 'tyre iron', 0.8);
+  }
+  p.guard = down.has('Space') && !p.move && p.slipT <= 0 && p.turnT <= 0;
+  const key = pressed('KeyJ') ? 'J' : pressed('KeyK') ? 'K' : pressed('KeyL') ? 'L' : null;
+  if (key && p.turnT <= 0 && p.slipT <= 0.08) {
+    if (p.move) { if (p.move.t / p.move.dur >= 0.3) p.buf = key; }
+    else startAttack(key);
+  }
+  if (p.move) {
+    p.move.t += dt;
+    if (!p.move.done && p.move.t >= p.move.dur * 0.42) { p.move.done = true; resolveHit(); }
+    if (p.move && p.move.t >= p.move.dur) {
+      p.move = null; p.chainT = tune.chainWindow;
+      if (p.buf) { const b = p.buf; p.buf = null; startAttack(b); }
+    }
+  } else if (p.chainT > 0) { p.chainT -= dt; if (p.chainT <= 0) p.chain = []; }
+}
+
+// ---- The robbers -----------------------------------------------------------------------
+function moveTo(e, z, l, sp, dt) {
+  const dz = z - e.z, dl = l - e.lane, d = Math.hypot(dz, dl * 0.6);
+  const step = sp * dt;
+  if (d <= step) { e.z = z; e.lane = l; return true; }
+  e.z += dz / d * step; e.lane += dl / d * step * 1.2; e.ph += dt * 9; return false;
+}
+function updateEnemy(e, dt) {
+  const k = KINDS[e.kind], p = state.p, sp = tune.walkSpeed * k.speed;
+  e.stT += dt; e.flash = Math.max(0, e.flash - dt); e.tauntT = Math.max(0, e.tauntT - dt);
+  switch (e.st) {
+    case 'enter': if (moveTo(e, e.tz, e.tl, sp, dt)) { e.st = 'wait'; e.stT = 0; } break;
+    case 'wait': e.ph += dt * 1.5; break;
+    case 'step':
+      if (moveTo(e, e.slot === 0 ? 0 : 0.1, e.slot === 0 ? 0 : (e.tl < 0 ? -0.62 : 0.62), sp * 1.3, dt)) {
+        e.st = 'ready'; e.stT = 0; e.atkT = e.tut ? 3.5 : 0.7 + rng() * 0.6;
+      }
+      break;
+    case 'ready': {
+      e.atkT -= dt;
+      const busy = state.enemies.some(o => o !== e && o.side === e.side && ['windup', 'strike'].includes(o.st) && (o.slot === e.slot || o.stT < 0.35));
+      if (e.atkT <= 0 && !busy) {
+        if (e.kind === 'thief' && p.facing !== 'back') break;
+        const names = e.tut ? ['hay'] : k.patterns;
+        e.pat = pattern(names[Math.floor(rng() * names.length)]); e.pi = 0; e.st = 'windup'; e.stT = 0;
+        if (e.tut) e.pat[0].wind *= tune.tutorialSlow;
+      }
+      break;
+    }
+    case 'windup': {
+      const s = e.pat[e.pi];
+      if (e.stT >= s.wind) {
+        if (s.feint) { e.st = 'feintback'; e.stT = 0; break; }
+        e.st = 'strike'; e.stT = 0; impact(e, s);
+      }
+      break;
+    }
+    case 'feintback': if (e.stT >= 0.22) { e.pi++; e.st = 'windup'; e.stT = 0; } break;
+    case 'strike':
+      if (e.stT >= 0.18) {
+        if (e.pat && e.pi + 1 < e.pat.length) { e.pi++; e.st = 'windup'; e.stT = 0; }
+        else { e.st = 'recover'; e.stT = 0; e.pat = null; }
+      }
+      break;
+    case 'recover': if (e.stT >= 0.45) { e.st = 'ready'; e.stT = 0; e.atkT = tune.attackGapMin + rng() * (tune.attackGapMax - tune.attackGapMin); } break;
+    case 'hurt': case 'block': case 'dodge':
+      if (e.stT >= (e.st === 'hurt' ? 0.3 : 0.28)) { e.st = e.slot >= 0 || e.side === 'back' ? 'step' : 'wait'; e.stT = 0; e.atkT = 0.5; }
+      break;
+    case 'stagger': if (e.stT >= tune.staggerTime) { e.st = 'ready'; e.stT = 0; e.atkT = 0.8; } break;
+    case 'knock':
+      e.fall = Math.min(1, e.stT / 0.35);
+      if (e.stT >= 1.1) { e.st = 'step'; e.stT = 0; e.fall = 0; }
+      break;
+    case 'down':
+      e.fall = Math.min(1, e.stT / 0.4);
+      if (e.stT > 1.3) e.alpha = Math.max(0, 1 - (e.stT - 1.3) / 0.5);
+      if (e.stT > 1.8) e.st = 'gone';
+      break;
+    // the car thief: past you along the wall, in the back door, onto the car
+    case 'slip':
+      if (moveTo(e, -0.1, -1.6, sp * 1.4, dt)) {
+        e.side = 'back'; e.z = 0.5; e.lane = -1.3; e.st = 'sneak'; e.stT = 0;
+        state.doorT = 1.2; state.alertT = 2.5; sfx.creak();
+        if (!state.seenThief) { state.seenThief = true; }
+      }
+      break;
+    case 'sneak':
+      if (p.facing === 'back' && p.turnT <= 0 && e.lane > -1.0) { e.st = 'confront'; e.stT = 0; break; }
+      if (moveTo(e, 0.62, -0.12 + (e.id % 3) * 0.12, sp, dt)) { e.st = 'hotwire'; e.stT = 0; }
+      break;
+    case 'hotwire':
+      if (p.facing === 'back' && p.turnT <= 0) { if (e.stT > tune.thiefNotice) { e.st = 'confront'; e.stT = 0; } }
+      else e.stT = 0;
+      if (Math.floor(state.t * 7) !== Math.floor((state.t - dt) * 7)) sfx.spark();
+      break;
+    case 'confront':
+      if (p.facing !== 'back') { e.st = 'sneak'; e.stT = 0; break; }
+      if (moveTo(e, 0.02, 0, sp * 1.2, dt)) { e.st = 'ready'; e.stT = 0; e.atkT = 0.6; e.slot = 0; }
+      break;
+  }
+  // a thief you turned away from goes back to the car
+  if (e.side === 'back' && p.facing !== 'back' && p.turnT <= 0 && ['ready', 'recover', 'hurt', 'stagger', 'windup', 'strike'].includes(e.st)) {
+    e.st = 'sneak'; e.stT = 0; e.pat = null; e.slot = -1;
+  }
+}
+function director(dt) {
+  const w = WAVES[state.wave];
+  // arrivals
+  state.spawnT -= dt;
+  if (state.queue.length && state.spawnT <= 0) {
+    const next = state.queue[0];
+    const live = state.enemies.filter(alive);
+    if (next === '|') { if (!live.length) { state.queue.shift(); state.spawnT = 0.8; } }
+    else if (next === 'thief' || frontFighters().length < w.maxFront) { state.queue.shift(); spawn(next); state.spawnT = tune.spawnGap * (0.8 + rng() * 0.4); }
+  }
+  // who steps up to fight you
+  const ff = frontFighters();
+  for (let slot = 0; slot < w.attackers; slot++) {
+    if (ff.some(e => e.slot === slot)) continue;
+    const c = ff.filter(e => e.slot < 0 && ['wait', 'enter'].includes(e.st)).sort((a, b) => a.z - b.z)[0];
+    if (c && (slot === 0 || ff.some(e => e.slot === 0))) { c.slot = slot; c.st = 'step'; c.stT = 0; }
+  }
+  // a side attacker moves to the middle when the middle is free
+  if (!ff.some(e => e.slot === 0)) { const s1 = ff.find(e => e.slot === 1); if (s1) { s1.slot = 0; if (['ready', 'wait'].includes(s1.st)) s1.st = 'step'; } }
+  // the car
+  const wiring = state.enemies.filter(e => e.st === 'hotwire').length;
+  if (wiring) state.hotwire += tune.hotwireRate * wiring * dt;
+  else state.hotwire = Math.max(0, state.hotwire - tune.hotwireDecay * dt);
+  if (state.hotwire >= 100) { state.hotwire = 100; lose('car'); return; }
+  // hour over
+  if (!state.queue.length && !state.enemies.some(alive)) {
+    state.phase = 'breather'; state.phaseT = tune.breather;
+    state.p.hp = Math.min(tune.playerHp, state.p.hp + tune.waveHeal);
+    if (state.wave + 1 >= WAVES.length) { state.phase = 'dawn'; state.phaseT = 2.5; }
+    else { startWave(state.wave + 1); state.queue = WAVES[state.wave].list.slice(); state.spawnT = 99; }
+    sfx.bell(); events.push({ t: state.t, hour: state.wave });
+  }
+}
+function hints() {
+  const p = state.p;
+  let h = '';
+  if (state.wave === 0) {
+    const e = state.enemies.find(x => x.tut && alive(x));
+    if (state.tut === 0 && e && e.slot === 0) h = 'J  to jab him';
+    else if (state.tut <= 1 && e && e.st === 'windup') h = 'He\'s winding up: tap SPACE just as it lands to PARRY';
+    else if (state.tut === 1 && e) h = 'Watch his right hand...';
+    else if (state.tut === 2 && e) h = 'Guard broken! Now  J  J  K  for a One-Two-Hook';
+  }
+  if (!h && state.alertT > 0 && p.facing === 'front') h = 'Someone\'s at the motor!  S  to turn round';
+  if (!h && state.enemies.some(e => e.st === 'hotwire') && p.facing === 'front') h = 'They\'re hotwiring the car!  S  to turn round';
+  if (!h && p.facing === 'back' && state.benchIron && p.weapon === 'fists' && !state.seenIron) h = 'E  to grab the tyre iron off the bench';
+  if (!h && state.wave === 1 && state.phase === 'fight' && state.t < 9999 && state.p.combo === 0 && state.hintT < 6) h = 'Hold SPACE to guard  ·  A / D to slip';
+  if (!h && state.enemies.some(e => e.st === 'windup' && e.pat && e.pat[e.pi].unblock)) h = 'Red flash: you can\'t block it. SLIP with A or D!';
+  return h;
+}
+function updatePlay(dt) {
+  state.t += dt;
+  const p = state.p;
+  for (const f of state.fx) f.t += dt;
+  state.fx = state.fx.filter(f => f.t < f.life);
+  state.shake = Math.max(0, state.shake - dt * 60);
+  state.doorT = Math.max(0, state.doorT - dt); state.alertT = Math.max(0, state.alertT - dt);
+  if (state.phase === 'intro' || state.phase === 'breather') {
+    state.phaseT -= dt; updatePlayer(dt);
+    if (state.phaseT <= 0 || (state.phase === 'intro' && (pressed('Enter') && state.t > 0.3))) { state.phase = 'fight'; state.spawnT = 0.8; }
+    return;
+  }
+  if (state.phase === 'dawn') {
+    state.phaseT -= dt;
+    if (state.phaseT <= 0) { state.gained = 'Dawn. The motor\'s still on the ramp.'; scene = 'results'; events.push({ t: state.t, win: true }); }
+    return;
+  }
+  if (state.hitstop > 0) { state.hitstop -= dt; return; }
+  if (state.wave === 1) state.hintT += dt;
+  if (p.facing === 'back' && state.benchIron && p.turnT <= 0) { state.ironSeenT = (state.ironSeenT || 0) + dt; if (state.ironSeenT > 4) state.seenIron = true; }
+  updatePlayer(dt);
+  if (scene !== 'play') return;
+  for (const e of state.enemies) updateEnemy(e, dt);
+  if (scene !== 'play') return;
+  state.enemies = state.enemies.filter(e => e.st !== 'gone');
+  director(dt);
+  state.hint = hints();
+}
+
+// ---- Drawing robbers: a pose is a set of joints in units of standing height ------------
+const J0 = {
+  head: [0, -0.9], neck: [0, -0.8], hip: [0, -0.47],
+  lSh: [-0.15, -0.78], rSh: [0.15, -0.78],
+  lEl: [-0.21, -0.6], lHa: [-0.09, -0.74, 1], rEl: [0.21, -0.6], rHa: [0.1, -0.75, 1],
+  lKn: [-0.1, -0.24], lFt: [-0.15, 0], rKn: [0.11, -0.24], rFt: [0.16, 0],
+};
+const POSES = {
+  idle: {},
+  loose: { lEl: [-0.22, -0.6], lHa: [-0.2, -0.47], rEl: [0.22, -0.6], rHa: [0.2, -0.47] },
+  windR: { neck: [-0.03, -0.8], head: [-0.04, -0.9], rEl: [0.33, -0.72], rHa: [0.37, -0.86, 0.9], lHa: [-0.05, -0.76, 1.1] },
+  strikeR: { neck: [-0.05, -0.79], head: [-0.06, -0.88], rEl: [0.13, -0.7], rHa: [0.01, -0.74, 2.3], lHa: [-0.12, -0.66] },
+  windL: { neck: [0.03, -0.8], head: [0.04, -0.9], lEl: [-0.3, -0.7], lHa: [-0.33, -0.83, 0.9] },
+  strikeL: { neck: [0.04, -0.79], head: [0.05, -0.88], lEl: [-0.12, -0.7], lHa: [0.0, -0.75, 2.2] },
+  windOver: { neck: [0.02, -0.82], head: [0.03, -0.92], lEl: [-0.12, -0.98], lHa: [0.03, -1.12], rEl: [0.19, -1.0], rHa: [0.08, -1.15], wa: -2.3 },
+  strikeOver: { neck: [0, -0.75], head: [0, -0.84], hip: [0, -0.44], lEl: [-0.16, -0.68], lHa: [-0.03, -0.62, 1.7], rEl: [0.18, -0.68], rHa: [0.04, -0.6, 1.7], wa: 1.5 },
+  windSweep: { neck: [0.05, -0.8], head: [0.06, -0.9], lEl: [0.18, -0.64], lHa: [0.34, -0.66], rEl: [0.33, -0.6], rHa: [0.4, -0.64], wa: -0.3 },
+  sweep: { neck: [-0.05, -0.79], head: [-0.06, -0.89], lEl: [-0.15, -0.66], lHa: [-0.3, -0.66, 1.5], rEl: [-0.08, -0.62], rHa: [-0.26, -0.64, 1.5], wa: 3.3 },
+  windStab: { rEl: [0.28, -0.56], rHa: [0.3, -0.63, 0.95], neck: [-0.02, -0.79], wa: 0.2 },
+  stab: { rEl: [0.11, -0.66], rHa: [0.02, -0.69, 2.1], neck: [-0.04, -0.78], head: [-0.05, -0.87], wa: -1.57 },
+  windShove: { lEl: [-0.25, -0.62], lHa: [-0.2, -0.7], rEl: [0.25, -0.62], rHa: [0.2, -0.7], neck: [0, -0.76] },
+  shove: { lEl: [-0.14, -0.68], lHa: [-0.08, -0.72, 1.9], rEl: [0.14, -0.68], rHa: [0.08, -0.72, 1.9], neck: [0, -0.78] },
+  grabWind: { lEl: [-0.32, -0.7], lHa: [-0.42, -0.78], rEl: [0.32, -0.7], rHa: [0.42, -0.78], neck: [0, -0.78], head: [0, -0.88], wa: -0.6 },
+  grab: { lEl: [-0.16, -0.7], lHa: [-0.05, -0.74, 2.2], rEl: [0.16, -0.7], rHa: [0.05, -0.74, 2.2] },
+  hurt: { neck: [0.05, -0.78], head: [0.1, -0.86], lEl: [-0.25, -0.62], lHa: [-0.28, -0.55], rEl: [0.27, -0.6], rHa: [0.31, -0.55] },
+  stagger: { hip: [0, -0.44], neck: [0.02, -0.74], head: [0.03, -0.82], lEl: [-0.28, -0.58], lHa: [-0.32, -0.44], rEl: [0.28, -0.58], rHa: [0.33, -0.44], lKn: [-0.15, -0.22], rKn: [0.16, -0.22] },
+  block: { lEl: [-0.14, -0.73], lHa: [0.07, -0.88, 1.25], rEl: [0.14, -0.73], rHa: [-0.07, -0.9, 1.25], neck: [0, -0.78], head: [0, -0.87] },
+  dodge: { neck: [0.12, -0.78], head: [0.17, -0.86], lSh: [-0.05, -0.76], rSh: [0.25, -0.77], lEl: [-0.08, -0.6], rEl: [0.31, -0.6], lHa: [0.03, -0.72], rHa: [0.22, -0.73] },
+  crouchBack: { hip: [0, -0.4], neck: [0.1, -0.64], head: [0.15, -0.72], lSh: [-0.03, -0.63], rSh: [0.24, -0.63], lEl: [0.06, -0.5], lHa: [0.22, -0.52], rEl: [0.3, -0.48], rHa: [0.34, -0.55], lKn: [-0.12, -0.2], rKn: [0.14, -0.22] },
+};
+function poseFor(e) {
+  const p = state.p;
+  switch (e.st) {
+    case 'windup': return e.pat[e.pi].wp;
+    case 'strike': return e.pat[e.pi].sp;
+    case 'feintback': return 'idle';
+    case 'hurt': return 'hurt';
+    case 'stagger': return 'stagger';
+    case 'block': return 'block';
+    case 'dodge': return 'dodge';
+    case 'hotwire': return 'crouchBack';
+    case 'wait': case 'enter': case 'slip': case 'sneak': return 'loose';
+    default: return e.kind === 'thief' ? 'loose' : 'idle';
+  }
+}
+function targetJoints(name) {
+  const J = {}, P = POSES[name];
+  for (const k in J0) { const v = P[k] || J0[k]; J[k] = [v[0], v[1], v[2] || 1]; }
+  J.wa = P.wa;
+  return J;
+}
+function blendJoints(e, name, dt) {
+  const T = targetJoints(name);
+  if (!e.J) { e.J = T; return; }
+  let rate = 14;
+  if (e.st === 'windup') rate = 6 / Math.max(0.3, e.pat[e.pi].wind);
+  if (e.st === 'strike') rate = 40;
+  if (e.st === 'hurt' || e.st === 'block' || e.st === 'dodge') rate = 30;
+  const k = 1 - Math.exp(-rate * dt);
+  for (const j in J0) for (let i = 0; i < 3; i++) e.J[j][i] = lerp(e.J[j][i], T[j][i], k);
+  e.J.wa = T.wa === undefined ? undefined : (e.J.wa === undefined ? T.wa : lerp(e.J.wa, T.wa, k));
+}
+const LOOK = {
+  thug: { sw: 1.0, hw: 1, top: 0.82, legs: 0.6, head: 'hood' },
+  brute: { sw: 1.38, hw: 1.25, top: 0.45, legs: 0.55, head: 'bald', weapon: 'crowbar', bulk: 1.3 },
+  knife: { sw: 0.86, hw: 0.85, top: 0.3, legs: 0.3, head: 'cap', weapon: 'knife', stripes: true, bulk: 0.85 },
+  thief: { sw: 0.95, hw: 0.95, top: 0.7, legs: 0.75, head: 'beanie', weapon: 'driver', bulk: 0.95 },
+  gaffer: { sw: 1.25, hw: 1.15, top: 0.9, legs: 0.85, head: 'flatcap', weapon: 'bat', coat: true, bulk: 1.15 },
+};
+function drawFigure(kind, J, x, fy, s, opt = {}) {
+  const L = LOOK[kind], bulk = L.bulk || 1;
+  const T = (v, dx = 0) => ({ x: x + (v[0] + dx) * s, y: fy + v[1] * s, d: v[2] || 1 });
+  const away = !!opt.away;
+  const hip = T(J.hip), neck = T(J.neck), head = T(J.head);
+  const swc = (v) => [J.neck[0] + (v[0] - J.neck[0]) * L.sw, v[1], v[2]];
+  const lSh = T(swc(J.lSh)), rSh = T(swc(J.rSh));
+  const hw = 0.075 * L.hw * s;
+  const lHip = { x: hip.x - hw, y: hip.y }, rHip = { x: hip.x + hw, y: hip.y };
+  const lw = 0.05 * s * bulk;
+  // legs
+  for (const [hp, kn, ft] of [[lHip, T(J.lKn), T(J.lFt)], [rHip, T(J.rKn), T(J.rFt)]]) {
+    limb(hp, kn, lw, lw * 0.85, L.legs, 1.8, 1.2);
+    limb(kn, ft, lw * 0.85, lw * 0.7, L.legs, 1.8, 1.2);
+    shape([[ft.x - lw * 1.1, ft.y - lw * 0.3], [ft.x + lw * 1.2, ft.y - lw * 0.4], [ft.x + lw * 1.5, ft.y + lw * 0.5], [ft.x - lw * 1.1, ft.y + lw * 0.5]], 0.9, 0, 1.6);
+    if (L.stripes) sline(hp.x + lw * 0.6, hp.y, ft.x + lw * 0.5, ft.y - lw, 1.4, 0.85, 1);
+  }
+  // torso (a coat flares down past the hips)
+  const tb = L.coat
+    ? [[lSh.x, lSh.y], [rSh.x, rSh.y], [rHip.x + 0.05 * s, hip.y + 0.12 * s], [rHip.x + 0.08 * s, hip.y + 0.28 * s], [lHip.x - 0.08 * s, hip.y + 0.28 * s], [lHip.x - 0.05 * s, hip.y + 0.12 * s]]
+    : [[lSh.x, lSh.y], [rSh.x, rSh.y], [rHip.x + 0.02 * s, hip.y + 0.03 * s], [lHip.x - 0.02 * s, hip.y + 0.03 * s]];
+  shape(tb, L.top, kind === 'gaffer' ? -0.8 : 0.9, 2.0);
+  const mx = (lSh.x + rSh.x) / 2;
+  if (kind === 'thug' && !away) { // hoodie pouch + drawstrings
+    shape([[mx - 0.07 * s, hip.y - 0.1 * s], [mx + 0.07 * s, hip.y - 0.1 * s], [mx + 0.09 * s, hip.y - 0.01 * s], [mx - 0.09 * s, hip.y - 0.01 * s]], 0.95, 0.9, 1.4);
+    sline(neck.x - 0.02 * s, neck.y + 0.01 * s, neck.x - 0.025 * s, neck.y + 0.12 * s, 1.4, 0.8, 1, () => '#efe9da');
+    sline(neck.x + 0.02 * s, neck.y + 0.01 * s, neck.x + 0.025 * s, neck.y + 0.12 * s, 1.4, 0.8, 1, () => '#efe9da');
+  }
+  if (kind === 'brute') { // vest straps over a vest, belly
+    sline(lSh.x + 0.05 * s, lSh.y, hip.x - 0.04 * s, hip.y, 3, 0.8, 1.5);
+    sline(rSh.x - 0.05 * s, rSh.y, hip.x + 0.04 * s, hip.y, 3, 0.8, 1.5);
+    spath([[hip.x - 0.09 * s, hip.y - 0.08 * s], [hip.x, hip.y - 0.04 * s], [hip.x + 0.09 * s, hip.y - 0.08 * s]], false, 1.4, 0.6, 1.5);
+  }
+  if (kind === 'knife') { sline(mx, neck.y + 0.02 * s, mx, hip.y, 1.6, 0.85, 1); } // tracksuit zip
+  if (kind === 'thief') { sline(mx, neck.y, mx + 0.01 * s, hip.y, 1.4, 0.7, 1); if (!away) shape([[mx - 0.03 * s, neck.y + 0.05 * s], [mx + 0.03 * s, neck.y + 0.05 * s], [mx + 0.03 * s, neck.y + 0.1 * s], [mx - 0.03 * s, neck.y + 0.1 * s]], 0.1, 0, 1.2); }
+  if (kind === 'gaffer') { // lapels and a scarf
+    sline(lSh.x + 0.04 * s, lSh.y + 0.01 * s, mx - 0.01 * s, hip.y - 0.05 * s, 2, 0.85, 1);
+    sline(rSh.x - 0.04 * s, rSh.y + 0.01 * s, mx + 0.01 * s, hip.y - 0.05 * s, 2, 0.85, 1);
+    shape([[neck.x - 0.06 * s, neck.y - 0.01 * s], [neck.x + 0.06 * s, neck.y - 0.01 * s], [neck.x + 0.03 * s, neck.y + 0.18 * s], [neck.x - 0.01 * s, neck.y + 0.18 * s]], 0.4, 1.2, 1.4, '#efe9da');
+  }
+  // head
+  const hr = 0.062 * s * (kind === 'brute' ? 1.12 : 1);
+  if (L.head === 'hood') shape(ellipsePts(head.x, head.y + hr * 0.1, hr * 1.42, hr * 1.5, 16), 0.88, 0.9, 2);
+  shape([...ellipsePts(head.x, head.y, hr, hr * 1.22, 16)], away ? 0.5 : 0.08, 0.6, 1.8);
+  if (!away) {
+    const ex = hr * 0.42, ey = head.y - hr * 0.08;
+    sline(head.x - ex - hr * 0.25, ey - hr * 0.3, head.x - ex + hr * 0.25, ey - hr * 0.12, 2.4, 0.95, 0.6); // brows, angry
+    sline(head.x + ex + hr * 0.25, ey - hr * 0.3, head.x + ex - hr * 0.25, ey - hr * 0.12, 2.4, 0.95, 0.6);
+    for (const sx of [-1, 1]) { ctx.fillStyle = ink(0.9); ctx.beginPath(); ctx.ellipse(head.x + sx * ex, ey + hr * 0.05, hr * 0.09, hr * 0.06, 0, 0, 7); ctx.fill(); }
+    sline(head.x, ey + hr * 0.1, head.x - hr * 0.12, head.y + hr * 0.38, 1.4, 0.75, 0.6); // nose
+    const hurtFace = ['hurt', 'stagger', 'down', 'knock'].includes(opt.st);
+    if (hurtFace) spath(ellipsePts(head.x, head.y + hr * 0.62, hr * 0.2, hr * 0.14, 8), true, 1.4, 0.8, 0.6);
+    else sline(head.x - hr * 0.3, head.y + hr * 0.62, head.x + hr * 0.3, head.y + hr * 0.6, 1.8, 0.85, 0.6);
+    if (kind === 'brute' || kind === 'gaffer') { ctx.save(); polyPath(ellipsePts(head.x, head.y + hr * 0.6, hr * 0.85, hr * 0.55, 12)); ctx.clip(); hatchBox(head.x - hr, head.y + hr * 0.1, head.x + hr, head.y + hr * 1.3, 1.2, 3.4, 0.45); ctx.restore(); } // stubble
+    if (kind === 'brute') sline(head.x + hr * 0.5, head.y - hr * 0.7, head.x + hr * 0.15, head.y - hr * 0.2, 1.2, 0.8, 0.5); // scar
+  }
+  if (L.head === 'hood') spath(ellipsePts(head.x, head.y + hr * 0.12, hr * 1.18, hr * 1.36, 16).slice(9).concat(ellipsePts(head.x, head.y + hr * 0.12, hr * 1.18, hr * 1.36, 16).slice(0, 2)), false, 2.2, 0.9, 1);
+  if (L.head === 'cap') { shape([[head.x - hr * 1.05, head.y - hr * 0.35], [head.x - hr * 0.9, head.y - hr * 1.15], [head.x + hr * 0.9, head.y - hr * 1.15], [head.x + hr * 1.05, head.y - hr * 0.35]], 0.75, 0.3, 1.8); if (!away) shape([[head.x - hr * 0.9, head.y - hr * 0.38], [head.x + hr * 0.9, head.y - hr * 0.38], [head.x + hr * 1.1, head.y - hr * 0.15], [head.x - hr * 1.1, head.y - hr * 0.15]], 0.9, 0, 1.6); }
+  if (L.head === 'beanie') { shape([[head.x - hr * 1.05, head.y - hr * 0.25], [head.x - hr * 0.9, head.y - hr * 1.05], [head.x, head.y - hr * 1.38], [head.x + hr * 0.9, head.y - hr * 1.05], [head.x + hr * 1.05, head.y - hr * 0.25]], 0.92, 1.4, 1.8); for (let i = -3; i <= 3; i++) sline(head.x + i * hr * 0.28, head.y - hr * 0.3, head.x + i * hr * 0.26, head.y - hr * 0.55, 1, 0.5, 0.4, () => '#d8d0bd'); }
+  if (L.head === 'flatcap') { shape([[head.x - hr * 1.25, head.y - hr * 0.42], [head.x - hr * 1.0, head.y - hr * 1.05], [head.x + hr * 0.9, head.y - hr * 1.2], [head.x + hr * 1.45, head.y - hr * 0.55], [head.x + hr * 1.25, head.y - hr * 0.35]], 0.7, -0.4, 2); }
+  if (L.head === 'bald' && !away) sline(head.x - hr * 0.45, head.y - hr * 0.95, head.x - hr * 0.1, head.y - hr * 1.08, 2, 0.4, 0.5, () => 'rgba(255,255,255,0.8)');
+  // arms, fists, the weapon
+  const aw = 0.042 * s * bulk;
+  for (const side of ['l', 'r']) {
+    const sh = side === 'l' ? lSh : rSh, el = T(J[side + 'El']), ha = T(J[side + 'Ha']);
+    const d = ha.d;
+    limb(sh, el, aw, aw * 0.9, L.top, 1.8);
+    limb(el, ha, aw * 0.9, aw * 0.8 * d, L.top, 1.8);
+    if (L.stripes) sline(sh.x, sh.y, ha.x, ha.y, 1.3, 0.8, 1);
+    const fr = 0.04 * s * d * bulk;
+    const gloves = kind === 'thief';
+    shape([[ha.x - fr, ha.y - fr * 0.8], [ha.x - fr * 0.3, ha.y - fr * 1.1], [ha.x + fr * 0.4, ha.y - fr * 1.05], [ha.x + fr, ha.y - fr * 0.7], [ha.x + fr * 1.05, ha.y + fr * 0.6], [ha.x - fr * 0.9, ha.y + fr * 0.8]], gloves ? 0.9 : 0.12, 0.5, 1.8);
+    for (let i = 1; i < 4; i++) sline(ha.x - fr + i * fr * 0.5, ha.y - fr * 0.9, ha.x - fr + i * fr * 0.5, ha.y - fr * 0.4, 1, 0.6, 0.4);
+    if (side === 'r' && L.weapon) drawWeapon(L.weapon, ha, el, J.wa, s, d, opt);
+  }
+  if (opt.flash > 0) { scribble(head.x, head.y + hr * 0.3, hr * 1.2, 7, red, 0.8, 2.2); }
+}
+function drawWeapon(w, ha, el, wa, s, d, opt) {
+  let ang = wa;
+  if (ang === undefined) ang = w === 'knife' ? -1.2 : Math.atan2(ha.y - el.y, ha.x - el.x) + (w === 'driver' ? 0 : 0.9);
+  const len = { crowbar: 0.42, bat: 0.4, knife: 0.1, driver: 0.12 }[w] * s * (0.7 + 0.3 * d);
+  const dx = Math.cos(ang), dy = Math.sin(ang), nx = -dy, ny = dx;
+  const ex = ha.x + dx * len, ey = ha.y + dy * len;
+  if (w === 'crowbar') {
+    const t = 0.012 * s;
+    shape([[ha.x + nx * t, ha.y + ny * t], [ex + nx * t, ey + ny * t], [ex - nx * t, ey - ny * t], [ha.x - nx * t, ha.y - ny * t]], 0.7, 0.4, 1.6);
+    spath([[ex, ey], [ex + dx * t * 2 + nx * t * 5, ey + dy * t * 2 + ny * t * 5], [ex + nx * t * 7, ey + ny * t * 7]], false, 3, 0.9, 1);
+  } else if (w === 'bat') {
+    const t0 = 0.012 * s, t1 = 0.03 * s;
+    shape([[ha.x + nx * t0, ha.y + ny * t0], [ex + nx * t1, ey + ny * t1], [ex + dx * t1 * 0.6, ey + dy * t1 * 0.6], [ex - nx * t1, ey - ny * t1], [ha.x - nx * t0, ha.y - ny * t0]], 0.3, 0.4, 2);
+    for (let i = 0; i < 3; i++) sline(ha.x + dx * len * (0.5 + i * 0.12) + nx * t1, ha.y + dy * len * (0.5 + i * 0.12) + ny * t1, ha.x + dx * len * (0.5 + i * 0.12) - nx * t1, ha.y + dy * len * (0.5 + i * 0.12) - ny * t1, 1, 0.5, 1);
+  } else if (w === 'knife') {
+    const t = 0.012 * s * d;
+    shape([[ha.x + nx * t, ha.y + ny * t], [ex, ey], [ha.x - nx * t, ha.y - ny * t]], 0.05, 0, 1.6, '#f4efe3');
+    sline(ha.x + nx * t * 0.3, ha.y + ny * t * 0.3, ex, ey, 1, 0.5, 0.3);
+  } else if (w === 'driver') {
+    sline(ha.x, ha.y, ex, ey, 2.4, 0.9, 0.5);
+  }
+  if (opt.tell) burst(ex, ey, 0.05 * s, opt.tellRed ? red : ink, 7, 0.9); // the glint just before it lands
+}
+function drawEnemy(e) {
+  const { x, fy, s } = scr(e);
+  const st = e.st;
+  ctx.save(); ctx.globalAlpha = e.alpha;
+  let J = e.J;
+  const sw = Math.sin(vt * 2.2 + e.id) * 0.006;
+  const walking = ['enter', 'step', 'slip', 'sneak', 'confront'].includes(st);
+  J = JSON.parse(JSON.stringify(J));
+  J.neck[1] += sw; J.head[1] += sw;
+  if (walking) {
+    const a = Math.sin(e.ph), b = Math.sin(e.ph + Math.PI);
+    J.lFt[0] += a * 0.06; J.lFt[1] -= Math.max(0, a) * 0.04; J.lKn[0] += a * 0.03;
+    J.rFt[0] += b * 0.06; J.rFt[1] -= Math.max(0, b) * 0.04; J.rKn[0] += b * 0.03;
+  }
+  if (st === 'dodge') for (const k in J0) J[k][0] = J[k][0] * (k.endsWith('Ft') ? 1 : 1) + (k.endsWith('Ft') || k.endsWith('Kn') ? 0 : e.dodgeDir * 0.08);
+  let tell = false, tellRed = false;
+  if (st === 'windup') {
+    const sTk = e.pat[e.pi]; const left = sTk.wind - e.stT;
+    if (left < 0.22) { tell = true; tellRed = !!sTk.unblock; for (const k of ['lHa', 'rHa']) { J[k][0] += Math.sin(vt * 90) * 0.004; } }
+    if (sTk.unblock) tellRed = true;
+  }
+  if (e.side === 'front' && e.z > 0.84) for (const k in J0) J[k][1] *= lerp(1, 0.78, (e.z - 0.84) / 0.18); // ducking under the shutter
+  if (e.fall > 0) { // falling over: tip back about the feet
+    ctx.translate(x, fy); ctx.rotate((e.id % 2 ? 1 : -1) * 1.35 * easeOut(e.fall)); ctx.translate(-x, -fy - e.fall * s * 0.02);
+  }
+  drawFigure(e.kind, J, x, fy, s, { away: st === 'hotwire' || (e.side === 'back' && st === 'sneak' && e.lane > -0.9), st, flash: e.flash, tell, tellRed });
+  ctx.restore();
+  if (st === 'windup' && tell && e.side === state.p.facing) { // little pencil motion marks either side
+    const hy = fy - s * 0.78;
+    for (const sx of [-1, 1]) sline(x + sx * s * 0.22, hy - s * 0.05, x + sx * s * 0.27, hy - s * 0.12, 2, 0.8, 1, tellRed ? red : ink);
+  }
+  if (st === 'stagger') { const hy = fy - s * 0.98; for (let i = 0; i < 3; i++) { const a = vt * 4 + i * 2.1; spath(ellipsePts(x + Math.cos(a) * s * 0.07, hy + Math.sin(a) * s * 0.02, s * 0.015, s * 0.015, 6), true, 1.4, 0.8, 0.5); } }
+  if (e.tauntT > 0 && e.taunt && alive(e)) {
+    const ty = fy - s * 1.02 - 26;
+    ctx.font = `20px ${FONT}`; const tw = ctx.measureText(e.taunt).width + 26;
+    shape([[x - tw / 2, ty - 18], [x + tw / 2, ty - 18], [x + tw / 2, ty + 18], [x + 10, ty + 18], [x, ty + 30], [x - 6, ty + 18], [x - tw / 2, ty + 18]], 0, 0, 1.4, '#f3eee1');
+    text(e.taunt, x, ty, 20, ink(0.95));
+  }
+}
+
+// ---- Drawing you: arms, fists and feet from your own eyes ------------------------------
+const REST_L = { x: 455, y: 585, s: 1.2, rot: -0.25 }, REST_R = { x: 830, y: 600, s: 1.2, rot: 0.25 };
+const GUARD_L = { x: 560, y: 465, s: 1.45, rot: -0.1 }, GUARD_R = { x: 728, y: 478, s: 1.45, rot: 0.1 };
+const mixP = (a, b, t) => ({ ...a, ...b, x: lerp(a.x, b.x, t), y: lerp(a.y, b.y, t), s: lerp(a.s, b.s, t), rot: lerp(a.rot, b.rot, t) });
+function arc(t, imp = 0.42) { return t < imp ? easeOut(t / imp) : 1 - easeIn((t - imp) / (1 - imp)); }
+function armPose() {
+  const p = state.p;
+  let L = { ...REST_L }, R = { ...REST_R }, leg = null, whip = 0;
+  if (p.guard) { L = mixP(L, GUARD_L, 1); R = mixP(R, GUARD_R, 1); }
+  const m = p.move;
+  if (m) {
+    const t = Math.min(1, m.t / m.dur), a = arc(t);
+    switch (m.id) {
+      case 'jab': L = mixP(L, { x: 612, y: 360, s: 0.72, rot: 0 }, a); R = mixP(R, GUARD_R, 0.6); break;
+      case 'cross': R = mixP(R, { x: 668, y: 350, s: 0.7, rot: 0 }, a); L = mixP(L, GUARD_L, 0.8); break;
+      case 'hook': {
+        const q = t < 0.42 ? easeOut(t / 0.42) : 1, back = t >= 0.42 ? easeIn((t - 0.42) / 0.58) : 0;
+        const bx = (1 - q) * (1 - q) * 1080 + 2 * q * (1 - q) * 1060 + q * q * 650, by = (1 - q) * (1 - q) * 560 + 2 * q * (1 - q) * 300 + q * q * 360;
+        R = mixP({ x: bx, y: by, s: lerp(1, 0.7, q), rot: lerp(0.4, -1.3, q) }, REST_R, back); L = mixP(L, GUARD_L, 0.9); break;
+      }
+      case 'elbow': R = mixP(R, { x: 520, y: 400, s: 0.95, rot: -1.5, elbow: true }, a); R.elbow = a > 0.25; L = mixP(L, GUARD_L, 0.9); break;
+      case 'kick': leg = { x: 660, y: lerp(900, 430, a), s: lerp(1.3, 0.85, a) }; L = mixP(L, GUARD_L, 0.7); R = mixP(R, GUARD_R, 0.7); break;
+      case 'spin': {
+        whip = t < 0.4 ? Math.sin(t / 0.4 * Math.PI) : 0;
+        const a2 = t < 0.3 ? 0 : arc((t - 0.3) / 0.7, 0.3);
+        if (t > 0.3) leg = { x: lerp(1400, 660, easeOut(Math.min(1, (t - 0.3) / 0.25))), y: lerp(480, 400, a2), s: 0.9, heel: true };
+        L = mixP(L, GUARD_L, 0.6); R = mixP(R, GUARD_R, 0.6); break;
+      }
+      case 'ironLight': R = mixP({ ...R, ang: -1.9 }, { x: 600, y: 420, s: 0.75, rot: -0.4, ang: -3.1 }, a); R.ang = lerp(-1.9, -3.1, a); L = mixP(L, GUARD_L, 0.6); break;
+      case 'ironHeavy': {
+        const wind = t < 0.25 ? easeOut(t / 0.25) : 1, sw2 = t < 0.25 ? 0 : arc((t - 0.25) / 0.75, 0.25);
+        R = mixP(mixP(R, { x: 1000, y: 280, s: 0.9, rot: 0.6 }, wind * (1 - sw2)), { x: 560, y: 560, s: 0.85, rot: -0.6 }, sw2);
+        R.ang = lerp(lerp(-1.9, -1.0, wind), -3.6, sw2); L = mixP(L, GUARD_L, 0.6); break;
+      }
+    }
+  }
+  if (p.parryAnim > 0) { const a = Math.sin((1 - p.parryAnim / 0.3) * Math.PI); L = mixP(GUARD_L, { x: 360, y: 420, s: 1.1, rot: -0.9 }, a); L.open = true; }
+  if (p.stunT > 0) { const k = p.stunT / tune.hitStun; L.y += 90 * k; R.y += 110 * k; L.rot -= 0.3 * k; R.rot += 0.3 * k; }
+  const bob = Math.sin(vt * 2.2) * 6;
+  L.y += bob; R.y += bob * 0.8;
+  if (p.weapon === 'iron' && R.ang === undefined) R.ang = -1.9;
+  return { L, R, leg, whip };
+}
+function fist(h, side, knuckles) {
+  const r = 62 * h.s;
+  ctx.save(); ctx.translate(h.x, h.y); ctx.rotate(h.rot);
+  if (h.open) { // an open palm, fingers up, for the parry
+    shape([[-r * 0.6, r * 0.5], [-r * 0.65, -r * 0.2], [r * 0.6, -r * 0.25], [r * 0.6, r * 0.5]], 0.1, 0.6, 2);
+    for (let i = 0; i < 4; i++) { const fx0 = -r * 0.55 + i * r * 0.36; shape([[fx0, -r * 0.2], [fx0 + 2, -r * (0.95 + (i % 3) * 0.1)], [fx0 + r * 0.28, -r * (0.95 + (i % 3) * 0.1)], [fx0 + r * 0.3, -r * 0.22]], 0.08, 0.6, 1.6); }
+    shape([[r * 0.55, r * 0.3], [r * 1.0, -r * 0.1], [r * 1.05, r * 0.1], [r * 0.6, r * 0.5]], 0.1, 0.6, 1.6);
+    ctx.restore(); return;
+  }
+  // the back of a closed fist: four knuckles, curled fingers, the thumb across, hand wraps
+  const pts = [[-r * 0.62, -r * 0.18]];
+  for (let i = 0; i < 4; i++) { const kx = -r * 0.52 + i * r * 0.35; pts.push([kx, -r * 0.48], [kx + r * 0.14, -r * 0.55]); }
+  pts.push([r * 0.66, -r * 0.2], [r * 0.7, r * 0.42], [r * 0.4, r * 0.62], [-r * 0.5, r * 0.6], [-r * 0.7, r * 0.3]);
+  shape(pts, 0.12, 0.5, 2.2);
+  for (let i = 0; i < 3; i++) { const kx = -r * 0.33 + i * r * 0.35; sline(kx + r * 0.02, -r * 0.45, kx - r * 0.03, -r * 0.05, 1.3, 0.7, 0.8); }
+  sline(-r * 0.6, -r * 0.08, r * 0.62, -r * 0.1, 1.2, 0.55, 1); // finger fold
+  shape([[side * r * 0.1, r * 0.08], [side * r * 0.7, r * 0.02], [side * r * 0.72, r * 0.28], [side * r * 0.12, r * 0.3]], 0.3, 0.3, 1.6); // thumb
+  for (let i = 0; i < 3; i++) sline(-r * 0.6, r * (0.38 + i * 0.08), r * 0.6, r * (0.33 + i * 0.09), 1.4, 0.55, 1.2); // tape
+  if (knuckles > 0.2) for (let i = 0; i < 4; i++) { if (i / 4 < knuckles) scribble(-r * 0.45 + i * r * 0.35, -r * 0.45, r * 0.06, 4, red, 0.7, 1.6); }
+  ctx.restore();
+}
+function arm(h, side, knuckles) {
+  const base = side < 0 ? { x: 150, y: 860 } : { x: 1130, y: 860 };
+  const r = 62 * h.s;
+  let el;
+  if (h.elbow) el = { x: 780, y: 420 };
+  else el = { x: (base.x + h.x) / 2 + side * 70, y: (base.y + h.y) / 2 + 70 };
+  const wrist = { x: h.x + (el.x - h.x) * 0.18, y: h.y + (el.y - h.y) * 0.18 + r * 0.35 };
+  limb(base, el, 95, 80, 0.55, 2.2, side < 0 ? 0.6 : -0.6); // the overall sleeve
+  sline(base.x + side * 40, base.y - 120, el.x, el.y + 20, 1.2, 0.5, 2); // seam
+  limb(el, wrist, 62, r * 0.5, 0.15, 2.2, side < 0 ? 0.4 : -0.4); // forearm
+  for (let i = 0; i < 3; i++) { const t = 0.75 + i * 0.08; sline(lerp(el.x, wrist.x, t) - r * 0.5, lerp(el.y, wrist.y, t) - 6, lerp(el.x, wrist.x, t) + r * 0.5, lerp(el.y, wrist.y, t) + 6, 1.4, 0.6, 1); }
+  if (h.ang !== undefined) drawIron(h);
+  fist(h, side, knuckles);
+}
+function drawIron(h) {
+  const L = 300 * h.s, t = 9 * h.s, a = h.ang, dx = Math.cos(a), dy = Math.sin(a), nx = -dy, ny = dx;
+  const x0 = h.x - dx * 60 * h.s, y0 = h.y - dy * 60 * h.s, ex = h.x + dx * L, ey = h.y + dy * L;
+  shape([[x0 + nx * t, y0 + ny * t], [ex + nx * t, ey + ny * t], [ex - nx * t, ey - ny * t], [x0 - nx * t, y0 - ny * t]], 0.75, a + 1, 1.8);
+  shape([[ex - nx * t * 2, ey - ny * t * 2], [ex + nx * t * 2 + dx * 40 * h.s, ey + ny * t * 2 + dy * 40 * h.s], [ex + nx * t * 4 + dx * 40 * h.s, ey + ny * t * 4 + dy * 40 * h.s], [ex + nx * t * 2, ey + ny * t * 2]], 0.85, 0, 1.6); // socket end
+}
+function drawLeg(leg) {
+  const s = leg.s, x = leg.x, y = leg.y;
+  if (leg.heel) { // the back of a boot coming across, heel first
+    limb({ x: 1400, y: 640 }, { x: x + 120 * s, y: y + 30 * s }, 110, 70 * s, 0.6, 2.4, 0.3);
+    shape([[x - 90 * s, y - 60 * s], [x + 120 * s, y - 50 * s], [x + 130 * s, y + 70 * s], [x - 70 * s, y + 80 * s], [x - 110 * s, y + 20 * s]], 0.8, 0.4, 2.6);
+    shape([[x - 100 * s, y - 40 * s], [x - 40 * s, y - 45 * s], [x - 30 * s, y + 70 * s], [x - 95 * s, y + 60 * s]], 0.95, 1.4, 2);
+    return;
+  }
+  limb({ x: x + 40, y: 900 }, { x, y: y + 80 * s }, 120, 85 * s, 0.6, 2.4, 0.4); // trouser leg
+  const sole = [[x - 80 * s, y - 120 * s], [x + 80 * s, y - 125 * s], [x + 95 * s, y + 20 * s], [x + 70 * s, y + 95 * s], [x - 70 * s, y + 95 * s], [x - 92 * s, y + 20 * s]];
+  shape(sole, 0.75, 0.2, 2.6);
+  for (let i = 0; i < 6; i++) sline(x - 70 * s, y - 95 * s + i * 32 * s, x + 70 * s, y - 100 * s + i * 32 * s, 3, 0.8, 1.5); // tread
+  sline(x - 85 * s, y + 40 * s, x + 88 * s, y + 38 * s, 2.4, 0.95, 1); // heel line
+}
+
+// ---- One frame of play -------------------------------------------------------------------
+function drawWorldDynamic(view) {
+  // the bulb swings on its flex
+  const sw = Math.sin(vt * 0.9) * 0.08, bx = 640 + Math.sin(sw) * 110, by = 60 + Math.cos(sw) * 110;
+  sline(640, 0, bx, by - 14, 1.4, 0.9, 1);
+  shape(ellipsePts(bx, by, 12, 16, 10), 0.0, 0, 1.6, '#fbf7ec');
+  for (let i = 0; i < 8; i++) { const a = i / 8 * Math.PI * 2; sline(bx + Math.cos(a) * 22, by + Math.sin(a) * 22, bx + Math.cos(a) * 34, by + Math.sin(a) * 34, 1, 0.35, 1); }
+  if (view === 'front') {
+    const on = Math.sin(vt * 23) > -0.85 || Math.sin(vt * 3.1) > 0.4; // the sign flickers
+    if (on) {
+      ctx.save(); ctx.shadowColor = RED; ctx.shadowBlur = 18;
+      text('OFF LICENCE', 750, 316, 26, red(0.95)); ctx.restore();
+      for (let i = 0; i < 10; i++) sline(670 + i * 18, 336, 668 + i * 18 + jit(4), 352, 1, 0.25, 2, red);
+    } else text('OFF LICENCE', 750, 316, 26, red(0.35));
+    for (const d of state.decals) { ctx.fillStyle = red(0.6); ctx.beginPath(); ctx.ellipse(d.x, d.y, d.r * 1.6, d.r * 0.6, 0, 0, 7); ctx.fill(); }
+  } else {
+    if (state.doorT > 0) shape([[90, 200], [150, 160], [150, 610], [90, 590]], 0.2, 0, 1.8); // the back door swinging open
+    if (state.benchIron) { // the tyre iron on the bench
+      shape([[1060, 446], [1170, 432], [1172, 440], [1062, 454]], 0.75, 0, 1.6);
+      shape([[1062, 446], [1056, 420], [1064, 418], [1070, 444]], 0.75, 0, 1.4);
+    }
+    if (state.enemies.some(e => e.st === 'hotwire')) { // sparks under the dash, the one red thing back here
+      for (let i = 0; i < 6; i++) { const a = jit(Math.PI); sline(690, 440, 690 + Math.cos(a) * (12 + vr() * 26), 440 + Math.sin(a) * (12 + vr() * 26), 1.6, 0.9, 1, red); }
+    }
+  }
+}
+function drawFx() {
+  for (const f of state.fx) {
+    const k = f.t / f.life, col = f.col === 'red' ? red : ink;
+    if (f.kind === 'hit') { burst(f.x, f.y, 60 + k * 50, red, 10, 1 - k); scribble(f.x, f.y, 26, 6, red, 0.8 * (1 - k), 2.4); }
+    if (f.kind === 'parry') { burst(f.x, f.y, 90 + k * 120, red, 14, 1 - k); spath(ellipsePts(f.x, f.y, 40 + k * 90, 40 + k * 90, 16), true, 3, 1 - k, 3, red); }
+    if (f.kind === 'text') {
+      ctx.save(); ctx.globalAlpha = 1 - k * k; const sz = f.col === 'red' ? 40 : 28;
+      ctx.font = `${sz}px ${FONT}`; const tw = ctx.measureText(f.txt).width;
+      ctx.fillStyle = 'rgba(243,238,225,0.85)'; ctx.fillRect(f.x - tw / 2 - 10, f.y - k * 30 - sz * 0.65, tw + 20, sz * 1.3);
+      text(f.txt, f.x, f.y - k * 30, sz, col(1)); ctx.restore();
+    }
+  }
+}
+function drawPlay() {
+  ctx.setTransform(mainCtx.getTransform());
+  const p = state.p;
+  jc = 0; boil = Math.floor(vt * 8);
+  const pose = armPose();
+  // camera: shake, slip, the spin, the turn round
+  const sh = state.shake;
+  let cx = Math.sin(vt * 91) * sh * 0.6, cy = Math.cos(vt * 77) * sh * 0.5, rot = 0;
+  if (p.slipT > 0) { const k = Math.sin((1 - p.slipT / tune.slipTime) * Math.PI); cx -= p.slipDir * 150 * k; rot = p.slipDir * 0.05 * k; }
+  let turnK = 0;
+  if (p.turnT > 0) { turnK = 1 - p.turnT / tune.turnTime; cx += (turnK < 0.5 ? -turnK * 2 : (1 - turnK) * 2) * 900; }
+  cx -= pose.whip * 500;
+  const view = p.facing;
+  ctx.save();
+  ctx.translate(640 + cx, 360 + cy); ctx.rotate(rot); ctx.scale(1.12, 1.12); ctx.translate(-640, -360); // a little bigger than the screen so edges never show
+  ctx.drawImage(layer(view), 0, 0, W, H);
+  drawWorldDynamic(view);
+  const es = state.enemies.filter(e => e.side === view && !(view === 'front' && e.st === 'slip' && e.z < 0.05)).sort((a, b) => b.z - a.z);
+  let shutterDone = view !== 'front';
+  for (const e of es) {
+    if (!shutterDone && e.z < 0.86) { ctx.drawImage(layer('shutter'), 0, 0, W, H); shutterDone = true; }
+    drawEnemy(e);
+  }
+  if (!shutterDone) ctx.drawImage(layer('shutter'), 0, 0, W, H);
+  drawFx();
+  ctx.restore();
+  if (p.turnT > 0 || pose.whip > 0.1) { // speed lines for the turn and the spin
+    const a = p.turnT > 0 ? Math.sin(turnK * Math.PI) : pose.whip;
+    for (let i = 0; i < 40; i++) { const y = vr() * H; sline(vr() * W * 0.3, y, W - vr() * W * 0.3, y + jit(6), 1.4, 0.5 * a, 3); }
+  }
+  // you
+  if (pose.leg) drawLeg(pose.leg);
+  arm(pose.L, -1, 0); arm(pose.R, 1, p.knuckles);
+  if (p.hurtFlash > 0) { // red pencil scrawl round the edge when you're hit
+    const a = p.hurtFlash / 0.45;
+    for (let i = 0; i < 26; i++) { const t = i / 26 * Math.PI * 2; const ex = 640 + Math.cos(t) * 760, ey = 360 + Math.sin(t) * 470; sline(ex, ey, lerp(ex, 640, 0.22 + vr() * 0.1), lerp(ey, 360, 0.22 + vr() * 0.1), 3, 0.8 * a, 4, red); }
+  }
+  // danger behind you
+  const behind = state.enemies.find(e => e.side !== p.facing && e.st === 'windup');
+  if (behind && p.turnT <= 0) {
+    const a = 0.5 + 0.5 * Math.sin(vt * 20);
+    for (let i = 0; i < 12; i++) { sline(0, 120 + i * 45, 60 + vr() * 30, 130 + i * 45, 3, a, 3, red); sline(W, 120 + i * 45, W - 60 - vr() * 30, 130 + i * 45, 3, a, 3, red); }
+    patch(640, 640, 340, 46); text('BEHIND YOU!  S', 640, 640, 32, red(1));
+  }
+  drawHUD();
+}
+function patch(x, y, w, h) { // a scrap of paper taped on, for HUD text to sit on
+  shape([[x - w / 2, y - h / 2 + 2], [x + w / 2, y - h / 2], [x + w / 2 - 3, y + h / 2], [x - w / 2 + 2, y + h / 2 - 2]], 0, 0, 1.4, '#f3eee1');
+}
+function bar(x, y, w, h, frac, danger) {
+  shape([[x, y], [x + w, y], [x + w, y + h], [x, y + h]], 0, 0, 1.6, '#f3eee1');
+  if (frac > 0) {
+    ctx.save(); polyPath([[x + 3, y + 3], [x + 3 + (w - 6) * frac, y + 3], [x + 3 + (w - 6) * frac, y + h - 3], [x + 3, y + h - 3]]); ctx.clip();
+    hatchBox(x, y, x + w, y + h, 0.9, 3, 0.95, 1.6, danger ? red : ink); hatchBox(x, y, x + w, y + h, -0.9, 4, 0.7, 1.2, danger ? red : ink); ctx.restore();
+  }
+}
+function drawHUD() {
+  const p = state.p;
+  // health
+  patch(185, 38, 330, 58);
+  text('YOU', 40, 38, 22, ink(0.95), 'left');
+  bar(92, 26, 250, 24, p.hp / tune.playerHp, p.hp < tune.playerHp * 0.3);
+  // the clock
+  patch(640, 40, 210, 62); text(clockNow(), 640, 41, 38, ink(1));
+  // the target
+  const tg = target() || state.enemies.find(e => e.side === p.facing && e.slot === 0 && alive(e));
+  if (tg) { patch(640, 96, 270, 40); text(KINDS[tg.kind].name, 520, 96, 20, ink(0.95), 'left'); bar(660, 86, 110, 18, Math.max(0, tg.hp) / tg.max, true); }
+  // the car
+  patch(1090, 40, 330, 58);
+  drawCarIcon(958, 40);
+  text('HOTWIRE', 1000, 40, 20, ink(0.95), 'left');
+  bar(1140, 28, 100, 24, state.hotwire / 100, state.hotwire > 0);
+  if (state.enemies.some(e => e.st === 'hotwire') && Math.sin(vt * 12) > 0) { patch(1090, 94, 300, 36); text("THEY'RE AT THE MOTOR!", 1090, 94, 22, red(1)); }
+  // weapon, combo, facing
+  patch(150, 678, 260, 44);
+  text(p.weapon === 'iron' ? `TYRE IRON  x${p.ironUses}` : 'FISTS', 40, 678, 22, ink(0.95), 'left');
+  text(p.facing === 'front' ? 'facing: shutter' : 'facing: the car', 270, 678, 16, ink(0.75), 'right');
+  if (p.combo >= 2) {
+    const g = p.combo >= 10 ? 'Masterful' : p.combo >= 6 ? 'Clean' : p.combo >= 3 ? 'Sharp' : 'Scrappy';
+    patch(1150, 300, 220, 74); text(`${p.combo} HITS`, 1150, 288, 32, p.combo >= 6 ? red(1) : ink(1)); text(g, 1150, 320, 20, ink(0.85));
+  }
+  if (p.counterT > 0) { patch(1150, 380, 220, 36); text(`COUNTER x${p.counterMult.toFixed(1).replace('.0', '')}`, 1150, 380, 22, red(1)); }
+  if (p.chain.length && !p.move && p.chainT > 0) { text(p.chain.join(' ') + ' ...', 1150, 420, 22, ink(0.8)); }
+  // hints and hour cards
+  if (state.hint) { ctx.font = `24px ${FONT}`; const w = ctx.measureText(state.hint).width + 40; patch(660, 684, w, 46); text(state.hint, 660, 684, 24, ink(1)); }
+  if (state.phase === 'intro' || state.phase === 'breather' || state.phase === 'dawn') {
+    const big = state.phase === 'dawn' ? '6:00 AM' : hourLabel(state.wave, 0);
+    patch(640, 320, 560, 190);
+    text(big, 640, 285, 64, ink(1));
+    const sub = state.phase === 'intro' ? 'A stolen motor on the ramp. Keep it there till dawn.'
+      : state.phase === 'dawn' ? 'Light under the shutter. They\'ve stopped coming.'
+      : `Hour ${state.wave + 1} of ${WAVES.length}.  Health back: +${tune.waveHeal}`;
+    text(sub, 640, 355, 22, ink(0.9));
+    if (state.phase === 'intro') text('Enter to skip', 640, 392, 16, ink(0.7));
+  }
+}
+function drawCarIcon(x, y) { // a little doodle of the car
+  spath([[x - 26, y + 6], [x - 22, y - 2], [x - 6, y - 4], [x, y - 12], [x + 12, y - 12], [x + 18, y - 4], [x + 28, y - 2], [x + 28, y + 6]], true, 1.6, 0.9, 0.8);
+  spath(ellipsePts(x - 15, y + 7, 5, 5, 8), true, 1.4, 0.9, 0.5); spath(ellipsePts(x + 17, y + 7, 5, 5, 8), true, 1.4, 0.9, 0.5);
+}
+
+// ---- Scenes ----------------------------------------------------------------------------
+const scenes = {
+  figures: {
+    update(dt) { state.t += dt; },
+    draw() {
+      ctx.setTransform(mainCtx.getTransform()); jc = 0; boil = Math.floor(vt * 8);
+      ctx.drawImage(LAYERS.paper, 0, 0, W, H);
+      text('Night Shift: who comes in', 640, 50, 32, ink(1));
+      const kinds = ['thug', 'brute', 'knife', 'thief', 'gaffer'];
+      kinds.forEach((k, i) => {
+        const x = 150 + i * 245;
+        drawFigure(k, targetJoints(k === 'thief' ? 'loose' : 'idle'), x, 610, 430, {});
+        text(KINDS[k].name, x, 655, 24, ink(1));
+      });
+      text('every figure drawn in pencil: hood, crowbar, cap and knife, beanie and screwdriver, flat cap, coat and bat', 640, 698, 16, ink(0.8));
+    },
+  },
+  title: {
+    update() { if (pressed('Enter') || pressed('Space')) { reset(); scene = 'play'; } },
+    draw() {
+      ctx.setTransform(mainCtx.getTransform()); jc = 0; boil = Math.floor(vt * 8);
+      ctx.drawImage(layer('front'), 0, 0, W, H);
+      drawWorldDynamic('front');
+      ctx.drawImage(layer('shutter'), 0, 0, W, H);
+      ctx.fillStyle = 'rgba(235,228,211,0.55)'; ctx.fillRect(0, 0, W, H);
+      patch(640, 150, 620, 150);
+      text('NIGHT SHIFT', 640, 132, 92, ink(1));
+      text('Guard the motor till dawn.', 640, 196, 26, red(1));
+      patch(640, 410, 1060, 230);
+      CONTROLS.forEach((c, i) => text(c, 640, 330 + i * 50, 22, ink(0.95)));
+      const blink = Math.sin(vt * 4) > -0.3;
+      patch(640, 610, 380, 56); if (blink) text('ENTER to clock on', 640, 610, 30, ink(1));
+    },
+  },
+  play: {
+    update(dt) {
+      if (pressed('KeyP') || pressed('Escape')) { scene = 'pause'; return; }
+      updatePlay(dt);
+    },
+    draw() { drawPlay(); },
+  },
+  pause: {
+    update() { if (pressed('KeyP') || pressed('Escape') || pressed('Enter')) scene = 'play'; },
+    draw() {
+      scenes.play.draw();
+      ctx.fillStyle = 'rgba(235,228,211,0.6)'; ctx.fillRect(0, 0, W, H);
+      patch(640, 370, 900, 600);
+      text('PAUSED: the moves', 640, 110, 40, ink(1));
+      MOVE_LIST.forEach(([k, d], i) => { text(k, 300, 165 + i * 44, 24, i >= 3 && i <= 5 ? red(1) : ink(1), 'left'); text(d, 450, 165 + i * 44, 20, ink(0.9), 'left'); });
+      text('ESC to carry on', 640, 650, 22, ink(0.85));
+    },
+  },
+  over: {
+    update() { if (pressed('KeyR') || pressed('Enter')) { reset(); scene = 'play'; } },
+    draw() {
+      scenes.play.draw();
+      ctx.fillStyle = 'rgba(235,228,211,0.65)'; ctx.fillRect(0, 0, W, H);
+      patch(640, 340, 760, 300);
+      text(state.lose === 'car' ? 'THE MOTOR\'S GONE' : 'LIGHTS OUT', 640, 240, 60, red(1));
+      text(state.gained, 640, 310, 28, ink(1));
+      text(`Robbers floored: ${state.floored}    Parries: ${state.parries}    Best combo: ${state.best}`, 640, 360, 22, ink(0.9));
+      text('R to start the night again', 640, 430, 26, ink(1));
+    },
+  },
+  results: {
+    update() { if (pressed('Enter') || pressed('KeyR')) { reset(); scene = 'play'; } },
+    draw() {
+      ctx.setTransform(mainCtx.getTransform()); jc = 0; boil = Math.floor(vt * 8);
+      ctx.drawImage(LAYERS.paper, 0, 0, W, H);
+      // dawn over the alley: a red-pencil sun behind the rooftops
+      spath(ellipsePts(640, 470, 150, 150, 24), true, 3, 0.9, 3, red);
+      for (let i = 0; i < 18; i++) { const a = Math.PI + i / 17 * Math.PI; sline(640 + Math.cos(a) * 170, 470 + Math.sin(a) * 170, 640 + Math.cos(a) * 240, 470 + Math.sin(a) * 240, 2, 0.7, 3, red); }
+      shape([[0, 470], [180, 470], [180, 400], [320, 400], [320, 440], [460, 440], [460, 380], [560, 380], [560, 470], [760, 470], [760, 410], [900, 410], [900, 450], [1080, 450], [1080, 390], [1280, 390], [1280, 720], [0, 720]], 0.7, 0.8, 2);
+      patch(640, 220, 760, 240);
+      text('6:00 AM. DAWN.', 640, 150, 56, ink(1));
+      text(state.gained, 640, 210, 26, ink(1));
+      const grade = state.parries >= 12 && state.best >= 10 ? 'Masterful' : state.parries >= 6 ? 'Clean' : state.parries >= 2 ? 'Sharp' : 'Scrappy';
+      text(`Robbers floored: ${state.floored}   Parries: ${state.parries}   Best combo: ${state.best}   Night: ${grade}`, 640, 260, 22, ink(0.9));
+      text('Enter for another night', 640, 310, 24, ink(1));
+    },
+  },
+};
+
+// ---- Loop: fixed step, frame time clamped ---------------------------------------------
+function step() {
+  vt += STEP;
+  if (pressed('KeyM')) { setMuted(!muted); hit.delete('KeyM'); }
+  scenes[scene].update(STEP); hit.clear();
+}
+let last, acc = 0, ALPHA = 1;
+function tick() {
+  const now = clock.now();
+  acc += Math.min(now - last, 0.25); last = now;
+  while (acc >= STEP) { step(); acc -= STEP; }
+  ALPHA = acc / STEP;
+  drawFrame();
+}
+function drawFrame() {
+  // robbers' poses ease toward where their state wants them
+  if (state) for (const e of state.enemies) blendJoints(e, poseFor(e), 1 / 60);
+  ctx = mainCtx;
+  scenes[scene].draw();
+  if (muted) text('muted', W - 50, H - 20, 16, ink(0.7));
+}
+function frame() { tick(); requestAnimationFrame(frame); }
+function timer() { if (document.visibilityState === 'visible' && clock.now() - last > 0.1) tick(); }
+
+// ---- What a check can read and drive (?manual=1 stops the loop; players never see it) ----
+window.game = {
+  get scene() { return scene; },
+  get state() { return state; },
+  press(code) { hit.add(code); },
+  hold(code, on) { on ? down.add(code) : down.delete(code); },
+  get events() { return events; },
+  step(n = 1, draw = true, alpha = 1) {
+    for (let i = 0; i < n; i++) step();
+    if (draw) { ALPHA = alpha; drawFrame(); }
+  },
+};
+
+buildLayers();
+reset();
+scene = params.get('scene') || 'title';
+last = clock.now();
+if (params.get('manual') === '1') drawFrame();
+else { requestAnimationFrame(frame); setInterval(timer, 50); }
+</script>
+</body>
+</html>

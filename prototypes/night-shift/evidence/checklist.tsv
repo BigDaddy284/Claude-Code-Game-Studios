@@ -1,0 +1,25 @@
+L1	pass	evidence/play.png	graphite hatching on paper, line boil (3 redraws of each background, live sketch lines 8x a second), dark smudged corners, red only for the sign, hits and blood; the bulb pool shows in the shot
+L2	pass	index.html:604	parry timing, guard breaks (stagger + counter window) and strings are built; values only, no Sifu names, art or moves
+L3	pass	evidence/back-view.png	first person, drawn perspective, fixed eye height facing the shutter; S turns round to the car on its ramp (back-view.png); your arms and boot drawn in the foreground (kick.png)
+F1	pass	index.html:1105	each move has its own pose in armPose(): jab, cross, hook arc, elbow, front kick boot, spinning back kick heel, guard, open-palm parry; kick shown in evidence/kick.png
+F2	pass	index.html:467	pause screen lists J J K, J K K, K K L with every other move
+F3	pass	index.html:604	guard takes guardChip damage; a Space tap within parryWindow of impact staggers the robber and opens a x2 counter window
+F4	pass	index.html:643	A/D slip shifts the view and dodges any blow, even the unblockable grab
+F5	pass	evidence/figures.png	Hoodie (haymaker, jab-jab), Crowbar Brute (overhead, sweep, blocks jabs), Knife Lad (3-stab flurry, sways off slow blows), Car Thief (hotwires, shoves), The Gaffer (bat swings, feint, red-flash grab)
+F6	pass	evidence/back-view.png	car on the two-post ramp, HOTWIRE bar top right fills while a thief works on it, S turns round to fight him
+F7	pass	index.html:650	E at the bench takes the tyre iron: x1.7 damage, breaks guards, snaps after 8 swings, back on the bench next hour
+F8	pass	index.html:510	clock runs 11 PM to 5 AM, one wave an hour, dawn at 6; combo counter with a grade (Scrappy/Sharp/Clean/Masterful) shown in play.png's sister shot back-view.png (7 HITS Clean)
+F9	not_assessed	index.html:398	pencil look passes (play.png); the Web Audio sounds (punch, parry clang, creak, sparks, bell) are built but a shot cannot show sound
+S1	pass	evidence/back-view.png	thieves slip past, hotwire the car, lose if it reaches 100%
+S2	pass	index.html:650	tyre iron is the melee weapon stand-in, wired to damage and guard breaks
+S3	pass	index.html:465	combo strings and parries built for real
+M1	pass	evidence/play.png	the clock opens at 11:00 PM with an intro card
+M2	pass	evidence/play.png	half-up shutter, off licence sign in red across the alley, flickering
+M3	pass	index.html:523	first robber is one hoodie, ducking under the shutter as he comes in
+M4	pass	index.html:786	hints in order: J to jab, tap SPACE as it lands (his first wind-up is stretched x1.7), then J J K
+M5	pass	evidence/back-view.png	two more come in; the thief runs past you along the wall, in the back door, and the hint says S to turn round
+M6	not_assessed	-	whether the turn with a robber at your back pays off is a feel, for your play
+C1	pass	index.html:421	hour 2 (midnight) brings the knife lad and a thief, 1 AM the crowbar brute who blocks jabs
+C2	pass	index.html:776	one health bar, no lives; zero health or a stolen car ends the night, R restarts from 11 PM
+C3	pass	index.html:421	4 AM and 5 AM let two robbers swing at once; 5 AM brings the Gaffer with bat swings, a feint and a red-flash grab
+C4	pass	index.html:817	clearing 5 AM gives a dawn results screen
